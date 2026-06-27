@@ -1440,7 +1440,6 @@ public class ItemOptions {
                 .setPadding(dp(8))
                 .setHasPadding(true)
                 .setRadius(dp(12));
-
             layout.setBackground(bg);
         }
 

@@ -408,8 +408,17 @@ public class DownscaleScrollableNoiseSuppressor {
         private SourcePart() {
             if (isLiquidGlassEnabled) {
                 renderNodesForGlass = new DownscaledRenderNode("glass", 0, true);
-                renderNodesForGlass.setScale(4, 4);
-                renderNodesForGlass.setPrimaryEffectBlur(dpf2(6f), RenderNodeEffects.getSaturationX3RenderEffect());
+                if (zxc.iconic.xenon.NekoConfig.useAdvancedLiquidGlass) {
+                    // Advanced glass: GPU hardware Gaussian blur on the downscaled source.
+                    // Blur lives here, not in the AGSL shader. This eliminates the broken-glass
+                    // artifact and the per-pixel texture-read explosion from multi-tap shader sampling.
+                    // No saturation boost: the shader receives the real scene, not a frosted matte.
+                    renderNodesForGlass.setScale(2, 2);
+                    renderNodesForGlass.setPrimaryEffectBlur(dpf2(Math.max(1f, zxc.iconic.xenon.NekoConfig.advancedGlassBlur)));
+                } else {
+                    renderNodesForGlass.setScale(2, 2);
+                    renderNodesForGlass.setPrimaryEffectBlur(dpf2(4f), RenderNodeEffects.getSaturationX1_25RenderEffect());
+                }
                 renderNodesForBlur = new DownscaledRenderNode("blur", 0);
                 renderNodesForBlur.setScale(8, 8);
                 renderNodesForBlur.setPrimaryEffectBlur(dpf2(40 - 1.66f));
@@ -437,6 +446,10 @@ public class DownscaleScrollableNoiseSuppressor {
 
         public void invalidate() {
             if (renderNodesForGlass != null) {
+                // Sync blur with the slider on every redraw.
+                if (zxc.iconic.xenon.NekoConfig.useAdvancedLiquidGlass) {
+                    renderNodesForGlass.setPrimaryEffectBlur(dpf2(Math.max(1f, zxc.iconic.xenon.NekoConfig.advancedGlassBlur)));
+                }
                 renderNodesForGlass.invalidateRenderNodes(renderNode);
                 renderNodesForBlur.invalidateRenderNodes(renderNodesForGlass.renderNodeRestored[0]);
             } else {

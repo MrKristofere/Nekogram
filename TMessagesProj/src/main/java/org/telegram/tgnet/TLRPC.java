@@ -49,7 +49,7 @@ import org.telegram.ui.Stories.MessageMediaStoryFull_old;
 import java.util.ArrayList;
 import java.util.HashMap;
 
-import tw.nekomimi.nekogram.helpers.WebAppHelper;
+import zxc.iconic.xenon.helpers.WebAppHelper;
 
 public class TLRPC {
 
@@ -58933,6 +58933,7 @@ public class TLRPC {
         public TL_textWithEntities summaryText; //custom
         public String translatedSummaryLanguage; //custom
         public TL_textWithEntities translatedSummaryText; //custom
+        public boolean ayuDeleted; //custom
 
         public static Message TLdeserialize(InputSerializedData stream, int constructor, boolean exception) {
             Message result = null;

@@ -19,10 +19,10 @@ public class BlurredBackgroundProviderImpl {
     public static BlurredBackgroundProvider mainTabs(Theme.ResourcesProvider resourcesProvider) {
         return new BlurredBackgroundProviderBuilder(resourcesProvider)
             .setBackgroundColor((r, isDark) -> {
-                final float alpha = LiteMode.isEnabled(LiteMode.FLAG_LIQUID_GLASS) ? 0.85f : 0.76f;
+                final float alpha = glassTintAlpha(LiteMode.isEnabled(LiteMode.FLAG_LIQUID_GLASS) ? 0.86f : 0.82f);
                 final int colorBg = Theme.getColor(Theme.key_windowBackgroundWhite, r);
                 final int colorTarget = Theme.getColor(Theme.key_glass_targetMainTabs, r);
-                return solveSrcColor(colorBg, colorTarget, alpha);
+                return tintWithAccent(solveSrcColor(colorBg, colorTarget, alpha), r);
             })
             .setStrokeColorTop(0x11000000, 0x06FFFFFF)
             .setStrokeColorBottom(0x20000000, 0x11FFFFFF)
@@ -35,10 +35,10 @@ public class BlurredBackgroundProviderImpl {
     public static BlurredBackgroundProvider topPanel(Theme.ResourcesProvider resourcesProvider) {
         return new BlurredBackgroundProviderBuilder(resourcesProvider)
             .setBackgroundColor((r, isDark) -> {
-                final float alpha = LiteMode.isEnabled(LiteMode.FLAG_LIQUID_GLASS) ? 0.85f : 0.76f;
+                final float alpha = glassTintAlpha(LiteMode.isEnabled(LiteMode.FLAG_LIQUID_GLASS) ? 0.86f : 0.82f);
                 final int colorBg = Theme.getColor(Theme.key_windowBackgroundWhite, r);
                 final int colorTarget = Theme.getColor(Theme.key_glass_targetMainTopPanel, r);
-                return solveSrcColor(colorBg, colorTarget, alpha);
+                return tintWithAccent(solveSrcColor(colorBg, colorTarget, alpha), r);
             })
             .setStrokeColorTop(0x11000000, 0x06FFFFFF)
             .setStrokeColorBottom(0x20000000, 0x11FFFFFF)
@@ -66,7 +66,7 @@ public class BlurredBackgroundProviderImpl {
     public static BlurredBackgroundProvider scrimMenuBackground(Theme.ResourcesProvider resourcesProvider) {
         return new BlurredBackgroundProviderBuilder(resourcesProvider)
             .setBackgroundColor((r, isDark) ->
-                Theme.multAlpha(Theme.getColor(Theme.key_actionBarDefaultSubmenuBackground), isDark ? 0.85f : 0.76f))
+                tintWithAccent(Theme.multAlpha(Theme.getColor(Theme.key_actionBarDefaultSubmenuBackground), glassTintAlpha(isDark ? 0.85f : 0.76f)), r))
             .setStrokeColorTop(0xFFFFFFFF, 0)
             .setStrokeColorBottom(0xFFFFFFFF, 0)
             .setShadowColor(0x26000000, 0)
@@ -75,12 +75,29 @@ public class BlurredBackgroundProviderImpl {
             .build();
     }
 
+    public static BlurredBackgroundProvider scrimMenuBackgroundSoft(Theme.ResourcesProvider resourcesProvider) {
+        return new BlurredBackgroundProviderBuilder(resourcesProvider)
+            .setBackgroundColor((r, isDark) -> {
+                final int colorBg = Theme.getColor(Theme.key_actionBarDefaultSubmenuBackground, r);
+                final int accent = Theme.getColor(Theme.key_chat_messageLinkIn, r);
+                final float accentMix = isDark ? 0.11f : 0.07f;
+                final float alpha = glassTintAlpha(LiteMode.isEnabled(LiteMode.FLAG_LIQUID_GLASS) ? (isDark ? 0.94f : 0.91f) : (isDark ? 0.91f : 0.88f));
+                return tintWithAccent(Theme.multAlpha(ColorUtils.blendARGB(colorBg, accent, accentMix), alpha), r);
+            })
+            .setStrokeColorTop(0x14000000, 0x1AFFFFFF)
+            .setStrokeColorBottom(0x0F000000, 0x10FFFFFF)
+            .setShadowColor(0x1E000000, 0x04000000)
+            .setShadowLayer(dpf2(4f), 0, dpf2(0.5f))
+            .setStrokeWidth(dpf2(0.5f), dpf2(0.5f))
+            .build();
+    }
+
     public static BlurredBackgroundProvider attachMenuSearch(Theme.ResourcesProvider resourcesProvider) {
         return new BlurredBackgroundProviderBuilder(resourcesProvider)
                 .setBackgroundColor((r, isDark) -> {
-                    final float alpha = LiteMode.isEnabled(LiteMode.FLAG_LIQUID_GLASS) ? 0.85f : 0.76f;
+                    final float alpha = glassTintAlpha(LiteMode.isEnabled(LiteMode.FLAG_LIQUID_GLASS) ? 0.85f : 0.76f);
                     final int colorBg = Theme.getColor(Theme.key_windowBackgroundWhite, r);
-                    return Theme.multAlpha(colorBg, alpha);
+                    return tintWithAccent(Theme.multAlpha(colorBg, alpha), r);
                 })
                 .setStrokeColorTop(0x17000000, 0x17FFFFFF)
                 .setStrokeColorBottom(0x17000000, 0x17FFFFFF)
@@ -127,14 +144,59 @@ public class BlurredBackgroundProviderImpl {
                             Theme.key_actionBarDefault : Theme.key_chat_topPanelBackground, r), 255);
                     }
 
-                    final float alpha = LiteMode.isEnabled(LiteMode.FLAG_LIQUID_GLASS) ? 0.85f : 0.76f;
+                    final float alpha = glassTintAlpha(LiteMode.isEnabled(LiteMode.FLAG_LIQUID_GLASS) ? 0.92f : 0.88f);
                     final int colorBg = Theme.getColor(Theme.key_chat_topPanelBackground, r);
-                    return Theme.multAlpha(colorBg, alpha);
+                    final int accent = Theme.getColor(Theme.key_chat_messageLinkIn, r);
+                    final int tinted = ColorUtils.blendARGB(colorBg, accent, isDark ? 0.12f : 0.08f);
+                    return tintWithAccent(Theme.multAlpha(tinted, alpha), r);
                 })
                 .setStrokeColorTop(0xFFFFFFFF, 0x28FFFFFF)
                 .setStrokeColorBottom(0xFFFFFFFF, 0x14FFFFFF)
                 .setShadowColor(0x20000000, 0)
                 //.setShadowLayer(dpf2(10 / 3f), 0, dpf2(2 / 3f))
+                .setStrokeWidth(dpf2(0.5f), dpf2(0.5f))
+                .build();
+    }
+
+    public static BlurredBackgroundProvider chatTitlePill(Theme.ResourcesProvider resourcesProvider) {
+        return new BlurredBackgroundProviderBuilder(resourcesProvider)
+                .setBackgroundColor((r, isDark) -> {
+                    final float alpha = glassTintAlpha(LiteMode.isEnabled(LiteMode.FLAG_LIQUID_GLASS) ? 0.90f : 0.86f);
+                    if (zxc.iconic.xenon.NekoConfig.advancedGlassTintBlackWhite) {
+                        // Override the theme-based tint with a neutral black/white base:
+                        // black in dark theme, white in light theme. tintWithAccent still
+                        // mixes the accent into the RGB channels afterwards (gated on
+                        // advanced glass + tintPercent slider), so the surface keeps a
+                        // natural tone instead of a flat wash. The slider controls how
+                        // strongly the tint is applied downstream in the render node.
+                        return tintWithAccent(Theme.multAlpha(isDark ? Color.BLACK : Color.WHITE, alpha), r);
+                    }
+                    final int colorBg = Theme.getColor(Theme.key_actionBarDefaultSubmenuBackground, r);
+                    final int accent = Theme.getColor(Theme.key_chat_messageLinkIn, r);
+                    final int tinted = ColorUtils.blendARGB(colorBg, accent, isDark ? 0.13f : 0.09f);
+                    return tintWithAccent(Theme.multAlpha(tinted, alpha), r);
+                })
+                .setStrokeColorTop(0x30FFFFFF, 0x24FFFFFF)
+                .setStrokeColorBottom(0x1AFFFFFF, 0x14FFFFFF)
+                .setShadowColor(0x18000000, 0)
+                .setStrokeWidth(dpf2(0.5f), dpf2(0.5f))
+                .build();
+    }
+
+    public static BlurredBackgroundProvider bottomSheet(Theme.ResourcesProvider resourcesProvider) {
+        return new BlurredBackgroundProviderBuilder(resourcesProvider)
+                .setBackgroundColor((r, isDark) -> {
+                    final float alpha = glassTintAlpha(LiteMode.isEnabled(LiteMode.FLAG_LIQUID_GLASS) ? 0.90f : 0.86f);
+                    if (zxc.iconic.xenon.NekoConfig.advancedGlassTintBlackWhite) {
+                        // Use a neutral black/white base in advanced glass mode (same pattern as chatTitlePill).
+                        return tintWithAccent(Theme.multAlpha(isDark ? Color.BLACK : Color.WHITE, alpha), r);
+                    }
+                    final int colorBg = Theme.getColor(Theme.key_dialogBackground, r);
+                    return tintWithAccent(Theme.multAlpha(colorBg, alpha), r);
+                })
+                .setStrokeColorTop(0x10FFFFFF, 0x10FFFFFF)
+                .setStrokeColorBottom(0x10FFFFFF, 0x08FFFFFF)
+                .setShadowColor(0x20000000, 0)
                 .setStrokeWidth(dpf2(0.5f), dpf2(0.5f))
                 .build();
     }
@@ -193,9 +255,9 @@ public class BlurredBackgroundProviderImpl {
     public static BlurredBackgroundProvider bulletin(Theme.ResourcesProvider resourcesProvider) {
         return new BlurredBackgroundProviderBuilder(resourcesProvider)
             .setBackgroundColor((r, isDark) -> {
-                final float alpha = LiteMode.isEnabled(LiteMode.FLAG_LIQUID_GLASS) ? 0.85f : 0.76f;
+                final float alpha = glassTintAlpha(LiteMode.isEnabled(LiteMode.FLAG_LIQUID_GLASS) ? 0.85f : 0.76f);
                 final int colorBg = Theme.getColor(Theme.key_undo_background, r);
-                return Theme.multAlpha(colorBg, alpha);
+                return tintWithAccent(Theme.multAlpha(colorBg, alpha), r);
             })
             //.setStrokeColorTop(0xFFFFFFFF, 0x28FFFFFF)
             //.setStrokeColorBottom(0xFFFFFFFF, 0x14FFFFFF)
@@ -212,10 +274,10 @@ public class BlurredBackgroundProviderImpl {
     public static BlurredBackgroundProvider inputFieldShareAlert(Theme.ResourcesProvider resourcesProvider) {
         return new BlurredBackgroundProviderBuilder(resourcesProvider)
                 .setBackgroundColor((r, isDark) -> {
-                    final float alpha = LiteMode.isEnabled(LiteMode.FLAG_LIQUID_GLASS) ? 0.85f : 0.76f;
+                    final float alpha = glassTintAlpha(LiteMode.isEnabled(LiteMode.FLAG_LIQUID_GLASS) ? 0.85f : 0.76f);
                     final int colorBg = Theme.getColor(Theme.key_windowBackgroundWhite, r);
                     final int colorTarget = Theme.getColor(Theme.key_chat_messagePanelBackground, r);
-                    return solveSrcColor(colorBg, colorTarget, alpha);
+                    return tintWithAccent(solveSrcColor(colorBg, colorTarget, alpha), r);
                 })
                 .setStrokeColorTop(0x28FFFFFF, 0x28FFFFFF)
                 .setStrokeColorBottom(0x14FFFFFF, 0x14FFFFFF)
@@ -298,6 +360,53 @@ public class BlurredBackgroundProviderImpl {
         final int a8 = MathUtils.clamp(Math.round(alpha * 255f), 0, 255);
 
         return Color.argb(a8, srcR, srcG, srcB);
+    }
+
+    /**
+     * Backwards-compat shim. Used to scale the glass tint alpha based on the
+     * advancedGlassTintPercent slider, but the user-facing semantic of that
+     * slider is now "blend the glass color toward the theme accent", which is
+     * implemented by {@link #tintWithAccent}. Call sites are left untouched
+     * here so the alpha values remain exactly as they were before the slider
+     * existed.
+     */
+    public static float glassTintAlpha(float alpha) {
+        return alpha;
+    }
+
+    /**
+     * Blend the given glass background color toward the theme accent
+     * ({@link Theme#key_chat_messageLinkIn}) by the user-controlled
+     * {@code advancedGlassTintPercent} slider (0..100, gated on
+     * {@code useAdvancedLiquidGlass}).
+     *
+     * <p>The slider's full range is intentionally mapped to a 0..0.5 blend
+     * factor (rather than 0..1) — a direct linear mix to a saturated accent
+     * looks oversaturated next to the original liquid glass shader's softer
+     * premultiplied tint. Halving the effective range keeps the look close
+     * to the system shader's appearance while still giving full
+     * configurability across the slider.
+     *
+     * <p>The original alpha is preserved so the surface keeps its translucency
+     * profile — only the RGB channels are mixed toward the accent. This is a
+     * no-op when advanced glass is off or the slider is at 0, which keeps the
+     * default appearance identical to the pre-feature look.
+     */
+    public static int tintWithAccent(int color, Theme.ResourcesProvider resourcesProvider) {
+        if (!zxc.iconic.xenon.NekoConfig.useAdvancedLiquidGlass) {
+            return color;
+        }
+        final int percent = zxc.iconic.xenon.NekoConfig.advancedGlassTintPercent;
+        if (percent <= 0) {
+            return color;
+        }
+        final float t = MathUtils.clamp(percent / 100f, 0f, 1f) * 0.5f;
+        final int accent = Theme.getColor(Theme.key_chat_messageLinkIn, resourcesProvider);
+        final int blended = ColorUtils.blendARGB(color, accent, t);
+        // Preserve the original alpha — blendARGB also blends alpha, which
+        // would lift translucency toward the (opaque) accent and overpower the
+        // surface.
+        return (color & 0xFF000000) | (blended & 0x00FFFFFF);
     }
 
     public static boolean checkBlurEnabled(Theme.ResourcesProvider resourcesProvider) {

@@ -51,6 +51,7 @@ import android.view.WindowInsets;
 import android.view.animation.AccelerateDecelerateInterpolator;
 import android.view.animation.DecelerateInterpolator;
 import android.view.animation.OvershootInterpolator;
+import android.view.animation.PathInterpolator;
 import android.widget.FrameLayout;
 
 import androidx.annotation.Keep;
@@ -93,8 +94,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-import tw.nekomimi.nekogram.NekoConfig;
-import tw.nekomimi.nekogram.helpers.AnalyticsHelper;
+import zxc.iconic.xenon.NekoConfig;
+import zxc.iconic.xenon.helpers.AnalyticsHelper;
 
 public class ActionBarLayout extends FrameLayout implements INavigationLayout, FloatingDebugProvider {
 
@@ -579,6 +580,26 @@ public class ActionBarLayout extends FrameLayout implements INavigationLayout, F
     private DecelerateInterpolator decelerateInterpolator = new DecelerateInterpolator(1.5f);
     private OvershootInterpolator overshootInterpolator = new OvershootInterpolator(1.02f);
     private AccelerateDecelerateInterpolator accelerateDecelerateInterpolator = new AccelerateDecelerateInterpolator();
+    private static PathInterpolator altTransitionInterpolatorOpen;
+    private static String altTransitionInterpolatorOpenLastEase;
+
+    private static PathInterpolator getAltTransitionInterpolator() {
+        String ease = NekoConfig.alternativeTransitionEase;
+        if (altTransitionInterpolatorOpen == null || !ease.equals(altTransitionInterpolatorOpenLastEase)) {
+            try {
+                String[] parts = ease.split(",");
+                float x1 = Float.parseFloat(parts[0].trim());
+                float y1 = Float.parseFloat(parts[1].trim());
+                float x2 = Float.parseFloat(parts[2].trim());
+                float y2 = Float.parseFloat(parts[3].trim());
+                altTransitionInterpolatorOpen = new PathInterpolator(x1, y1, x2, y2);
+                altTransitionInterpolatorOpenLastEase = ease;
+            } catch (Exception e) {
+                altTransitionInterpolatorOpen = new PathInterpolator(0.37f, 0.01f, 0.1f, 1f);
+            }
+        }
+        return altTransitionInterpolatorOpen;
+    }
 
     public float innerTranslationX;
 
@@ -1743,6 +1764,8 @@ public class ActionBarLayout extends FrameLayout implements INavigationLayout, F
         containerView.setAlpha(1.0f);
         containerView.setScaleX(1.0f);
         containerView.setScaleY(1.0f);
+        containerView.setOutlineProvider(null);
+        containerView.setClipToOutline(false);
         containerViewBack.setAlpha(1.0f);
         containerViewBack.setScaleX(1.0f);
         containerViewBack.setScaleY(1.0f);
@@ -1832,6 +1855,35 @@ public class ActionBarLayout extends FrameLayout implements INavigationLayout, F
         if (first) {
             animationProgress = 0.0f;
             lastFrameTime = System.nanoTime() / 1000000;
+            if (NekoConfig.alternativeTransition && !open && !preview) {
+                containerView.setTranslationX(0);
+                containerViewBack.setTranslationX(0);
+                containerView.setPivotX(containerView.getMeasuredWidth() / 2f);
+                containerView.setPivotY(containerView.getMeasuredHeight() / 2f);
+                final WindowInsets insets = getRootWindowInsets();
+                final float cornerRadius;
+                if (insets != null) {
+                    final RoundedCorner topLeft = insets.getRoundedCorner(RoundedCorner.POSITION_TOP_LEFT);
+                    final RoundedCorner topRight = insets.getRoundedCorner(RoundedCorner.POSITION_TOP_RIGHT);
+                    final RoundedCorner bottomRight = insets.getRoundedCorner(RoundedCorner.POSITION_BOTTOM_RIGHT);
+                    final RoundedCorner bottomLeft = insets.getRoundedCorner(RoundedCorner.POSITION_BOTTOM_LEFT);
+                    cornerRadius = Math.max(
+                        Math.max(topLeft == null ? 0 : topLeft.getRadius(), topRight == null ? 0 : topRight.getRadius()),
+                        Math.max(bottomRight == null ? 0 : bottomRight.getRadius(), bottomLeft == null ? 0 : bottomLeft.getRadius())
+                    );
+                } else {
+                    cornerRadius = dp(28);
+                }
+                if (cornerRadius > 0) {
+                    containerView.setOutlineProvider(new ViewOutlineProvider() {
+                        @Override
+                        public void getOutline(View view, Outline outline) {
+                            outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), cornerRadius);
+                        }
+                    });
+                    containerView.setClipToOutline(true);
+                }
+            }
         }
         AndroidUtilities.runOnUIThread(animationRunnable = new Runnable() {
             @Override
@@ -1852,6 +1904,9 @@ public class ActionBarLayout extends FrameLayout implements INavigationLayout, F
                 }
                 lastFrameTime = newTime;
                 float duration = preview && open ? 190.0f : 150.0f;
+                if (NekoConfig.alternativeTransition && !preview) {
+                    duration = NekoConfig.alternativeTransitionSpeed + (open ? 0 : 300);
+                }
                 animationProgress += dt / duration;
                 if (animationProgress > 1.0f) {
                     animationProgress = 1.0f;
@@ -1893,12 +1948,16 @@ public class ActionBarLayout extends FrameLayout implements INavigationLayout, F
                     } else {
                         interpolated = CubicBezierInterpolator.EASE_OUT_QUINT.getInterpolation(animationProgress);
                     }
+                } else if (NekoConfig.alternativeTransition) {
+                    interpolated = open ? getAltTransitionInterpolator().getInterpolation(animationProgress) : CubicBezierInterpolator.EASE_OUT_QUINT.getInterpolation(animationProgress);
                 } else {
                     interpolated = decelerateInterpolator.getInterpolation(animationProgress);
                 }
                 if (open) {
                     float clampedInterpolated = MathUtils.clamp(interpolated, 0, 1);
-                    containerView.setAlpha(clampedInterpolated);
+                    if (!NekoConfig.alternativeTransition || preview) {
+                        containerView.setAlpha(clampedInterpolated);
+                    }
                     if (preview) {
                         containerView.setScaleX(0.7f + 0.3f * interpolated);
                         containerView.setScaleY(0.7f + 0.3f * interpolated);
@@ -1913,11 +1972,18 @@ public class ActionBarLayout extends FrameLayout implements INavigationLayout, F
                         containerView.invalidate();
                         invalidate();
                     } else {
-                        containerView.setTranslationX(dp(48) * (1.0f - interpolated));
+                        if (NekoConfig.alternativeTransition) {
+                            containerView.setTranslationX(getWidth() * (1.0f - interpolated));
+                            containerViewBack.setTranslationX(-dp(96) * interpolated);
+                        } else {
+                            containerView.setTranslationX(dp(48) * (1.0f - interpolated));
+                        }
                     }
                 } else {
                     float clampedReverseInterpolated = MathUtils.clamp(1f - interpolated, 0, 1);
-                    containerViewBack.setAlpha(clampedReverseInterpolated);
+                    if (!NekoConfig.alternativeTransition || preview) {
+                        containerViewBack.setAlpha(clampedReverseInterpolated);
+                    }
                     if (preview) {
                         containerViewBack.setScaleX(0.9f + 0.1f * (1.0f - interpolated));
                         containerViewBack.setScaleY(0.9f + 0.1f * (1.0f - interpolated));
@@ -1928,7 +1994,20 @@ public class ActionBarLayout extends FrameLayout implements INavigationLayout, F
                         containerView.invalidate();
                         invalidate();
                     } else {
-                        containerViewBack.setTranslationX(dp(48) * interpolated);
+                        if (NekoConfig.alternativeTransition) {
+                            float dragP = MathUtils.clamp(interpolated / 0.18f, 0, 1);
+                            float commitP = MathUtils.clamp((interpolated - 0.18f) / 0.82f, 0, 1);
+                            float dragTx = dp(64) * CubicBezierInterpolator.StandardDecelerate.getInterpolation(dragP);
+                            float commitTx = getMeasuredWidth() * CubicBezierInterpolator.EASE_OUT_QUINT.getInterpolation(commitP);
+                            containerViewBack.setTranslationX(dragTx + commitTx);
+                            float dip = MathUtils.clamp(interpolated / 0.18f, 0, 1);
+                            float rec = MathUtils.clamp((interpolated - 0.18f) / 0.82f, 0, 1);
+                            float prevScale = 1f - 0.03f * (dip - rec);
+                            containerView.setScaleX(prevScale);
+                            containerView.setScaleY(prevScale);
+                        } else {
+                            containerViewBack.setTranslationX(dp(48) * interpolated);
+                        }
                     }
                 }
                 if (animationProgress < 1) {
@@ -2185,6 +2264,9 @@ public class ActionBarLayout extends FrameLayout implements INavigationLayout, F
                     } else {
                         presentFragmentInternalRemoveOld(removeLast, currentFragment);
                         containerView.setTranslationX(0);
+                        if (NekoConfig.alternativeTransition) {
+                            containerViewBack.setTranslationX(0);
+                        }
                     }
                     if (currentFragment != null) {
                         currentFragment.onTransitionAnimationEnd(false, false);
@@ -2193,7 +2275,7 @@ public class ActionBarLayout extends FrameLayout implements INavigationLayout, F
                     fragment.onBecomeFullyVisible();
                 };
                 boolean noDelay;
-                if (noDelay = !fragment.needDelayOpenAnimation()) {
+                if (noDelay = (!fragment.needDelayOpenAnimation() || NekoConfig.removeChatDelay)) {
                     if (currentFragment != null) {
                         currentFragment.onTransitionAnimationStart(false, false);
                     }
@@ -2208,13 +2290,21 @@ public class ActionBarLayout extends FrameLayout implements INavigationLayout, F
                     animation = fragment.onCustomTransitionAnimation(true, () -> onAnimationEndCheck(false));
                 }
                 if (animation == null) {
-                    containerView.setAlpha(0.0f);
+                    if (NekoConfig.alternativeTransition && !preview) {
+                        containerView.setAlpha(1.0f);
+                    } else {
+                        containerView.setAlpha(0.0f);
+                    }
                     if (preview) {
                         containerView.setTranslationX(0.0f);
                         containerView.setScaleX(0.9f);
                         containerView.setScaleY(0.9f);
                     } else {
-                        containerView.setTranslationX(48.0f);
+                        if (NekoConfig.alternativeTransition) {
+                            containerView.setTranslationX(getWidth());
+                        } else {
+                            containerView.setTranslationX(48.0f);
+                        }
                         containerView.setScaleX(1.0f);
                         containerView.setScaleY(1.0f);
                     }
@@ -2262,7 +2352,7 @@ public class ActionBarLayout extends FrameLayout implements INavigationLayout, F
                             };
                         }
                         AndroidUtilities.runOnUIThread(waitingForKeyboardCloseRunnable, 250);
-                    } else if (fragment.needDelayOpenAnimation()) {
+                    } else if (fragment.needDelayOpenAnimation() && !NekoConfig.removeChatDelay) {
                         delayedOpenAnimationRunnable = new Runnable() {
                             @Override
                             public void run() {

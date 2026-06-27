@@ -35,6 +35,7 @@ import android.util.Property;
 import android.util.TypedValue;
 import android.view.GestureDetector;
 import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
@@ -358,6 +359,7 @@ public class Bulletin {
                             layoutTransition.animateEnter(layout, layout::onEnterTransitionStart, () -> {
                                 layout.transitionRunningEnter = false;
                                 layout.onEnterTransitionEnd();
+                                layout.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
                                 if (setCanHideOnShow) setCanHide(true);
                             }, offset -> {
                                 if (currentDelegate != null && !top) {
@@ -372,6 +374,7 @@ public class Bulletin {
                             updatePosition();
                             layout.onEnterTransitionStart();
                             layout.onEnterTransitionEnd();
+                            layout.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
                             if (setCanHideOnShow) setCanHide(true);
                         }
                     }
@@ -795,16 +798,37 @@ public class Bulletin {
         }
 
         @Override
+        protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+            super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+            if (zxc.iconic.xenon.NekoConfig.roundedBulletin && background != null && !hasCustomBackground) {
+                int h = getMeasuredHeight();
+                int r = Math.min(h / 2, dp(48));
+                if (r != lastBulletinRounding) {
+                    lastBulletinRounding = r;
+                    background = Theme.createRoundRectDrawable(r, bgColor);
+                }
+            }
+        }
+
+        private int lastBulletinRounding;
+        private int bgColor;
+
+        @Override
         protected boolean verifyDrawable(@NonNull Drawable who) {
             return background == who || super.verifyDrawable(who);
         }
 
         protected void setBackground(int color) {
+            bgColor = color;
             setBackground(color, 16);
         }
 
         public void setBackground(int color, int rounding) {
             if (!hasCustomBackground) {
+                bgColor = color;
+                if (zxc.iconic.xenon.NekoConfig.roundedBulletin) {
+                    rounding = 48;
+                }
                 background = Theme.createRoundRectDrawable(dp(rounding), color);
             }
         }

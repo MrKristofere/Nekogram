@@ -271,6 +271,7 @@ import org.telegram.ui.Components.SizeNotifierFrameLayout;
 import org.telegram.ui.Components.StarRatingView;
 import org.telegram.ui.Components.StickerEmptyView;
 import org.telegram.ui.Components.TagEditCell;
+import org.telegram.ui.Components.TextStyleSpan;
 import org.telegram.ui.Components.TimerDrawable;
 import org.telegram.ui.Components.TranslateAlert2;
 import org.telegram.ui.Components.TypefaceSpan;
@@ -337,13 +338,14 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
-import tw.nekomimi.nekogram.BackButtonMenuRecent;
-import tw.nekomimi.nekogram.NekoConfig;
-import tw.nekomimi.nekogram.SimpleTextViewSwitcher;
-import tw.nekomimi.nekogram.helpers.PopupHelper;
-import tw.nekomimi.nekogram.helpers.remote.ConfigHelper;
-import tw.nekomimi.nekogram.settings.NekoSettingsActivity;
-import tw.nekomimi.nekogram.translator.Translator;
+import zxc.iconic.xenon.BackButtonMenuRecent;
+import zxc.iconic.xenon.NekoConfig;
+import zxc.iconic.xenon.SimpleTextViewSwitcher;
+import zxc.iconic.xenon.helpers.PopupHelper;
+import zxc.iconic.xenon.helpers.remote.ConfigHelper;
+import zxc.iconic.xenon.settings.NekoSettingsActivity;
+import zxc.iconic.xenon.telega.TelegaDetector;
+import zxc.iconic.xenon.translator.Translator;
 import me.vkryl.android.animator.BoolAnimator;
 
 public class ProfileActivity extends BaseFragment implements NotificationCenter.NotificationCenterDelegate, DialogsActivity.DialogsActivityDelegate, SharedMediaLayout.SharedMediaPreloaderDelegate, ImageUpdater.ImageUpdaterDelegate, SharedMediaLayout.Delegate, MainTabsActivity.TabFragmentDelegate {
@@ -6042,6 +6044,15 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
     }
 
     private void updateGooey() {
+        avatarGooey.setGooeyEndOffsetDp(NekoConfig.gooeyAvatarOffset);
+        if (NekoConfig.disableGooeyAvatarAnimation) {
+            avatarGooey.setGooeyEnabled(false);
+            avatarGooey.setAlpha(MathUtils.clamp(1f - (pullUpProgress - 0.5f) / 0.5f, 0f, 1f));
+            if (storyView != null && playProfileAnimation != 2) {
+                storyView.setAlpha(pullUpProgress > 0 ? lerp(1.0f, 0.0f, ilerp(pullUpProgress, 0, 0.5f)) : 1.0f);
+            }
+            return;
+        }
         float v = Math.min(pullUpProgress, 0.25f) / 0.25f;
         if (isTopic) {
             avatarGooey.setAlpha(1f - v);
@@ -8493,9 +8504,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                 + actionBar.getTranslationY();
 
             if (!openAnimationInProgress) {
-                float endY = -dp(29);
+                float endY = -dp(29) + dp(NekoConfig.gooeyAvatarOffset);
                 if (avatarGooey != null && avatarGooey.notchInfo != null && avatarGooey.notchInfo.isLikelyCircle) {
-                    endY = avatarGooey.notchInfo.bounds.centerY();
+                    endY = avatarGooey.notchInfo.bounds.centerY() + dp(NekoConfig.gooeyAvatarOffset);
                 }
                 float startY =
                     (actionBar.getOccupyStatusBar() ? AndroidUtilities.statusBarHeight : 0)
@@ -11475,6 +11486,23 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                 }
             }
             hasCustomPhoto = user.photo != null && user.photo.personal;
+            boolean telegaWarned = false;
+            if (!isBot && user.id != getUserConfig().getClientUserId() && NekoConfig.telegaDetectorEnabled) {
+                int telegaState = TelegaDetector.getState(user.id);
+                if (telegaState == TelegaDetector.STATE_UNKNOWN) {
+                    TelegaDetector.requestState(user.id, false, state -> {
+                        if (userId == user.id) {
+                            if (listAdapter != null) {
+                                listAdapter.notifyDataSetChanged();
+                            }
+                            updateProfileData(false);
+                        }
+                    });
+                } else if (telegaState == TelegaDetector.STATE_IS_TELEGA || telegaState == TelegaDetector.STATE_WAS_TELEGA) {
+                    telegaWarned = true;
+                    newString = TextUtils.concat(newString, " ⚠️");
+                }
+            }
             try {
                 newString = Emoji.replaceEmoji(newString, nameTextView[1].getPaint().getFontMetricsInt(), false);
             } catch (Exception ignore) {
@@ -11645,6 +11673,22 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                         }
                         showDialog(premiumPreviewBottomSheet);
                     });
+                }
+                // Telega-detector tap-to-explain bulletin. We ALWAYS bind/clear
+                // setOnClickListener (the whole-text-view tap handler) when
+                // telegaWarned changes, decoupled from the premium-emoji path
+                // above which only handles setRightDrawableOnClick (icon-only
+                // tap). Without this decoupling premium telega users would
+                // never get the bulletin because the previous implementation
+                // chained `else if (telegaWarned)` after the premium branch and
+                // therefore never ran for premium users.
+                if (telegaWarned) {
+                    nameTextView[a].setOnClickListener(v -> BulletinFactory.of(ProfileActivity.this)
+                            .createSimpleBulletin(R.raw.chats_infotip, LocaleController.getString(R.string.TelegaDetectorStatusRisk))
+                            .show());
+                } else {
+                    nameTextView[a].setOnClickListener(null);
+                    nameTextView[a].setClickable(false);
                 }
             }
 
@@ -13551,14 +13595,23 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                             //containsGift = !myProfile && today && !getMessagesController().premiumPurchaseBlocked();
                         }
                     } else if (position == phoneRow) {
-                        String text;
+                        CharSequence text;
                         TLRPC.User user = getMessagesController().getUser(userId);
                         String phoneNumber;
                         if (user != null && !TextUtils.isEmpty(vcardPhone)) {
                             text = PhoneFormat.getInstance().format("+" + vcardPhone);
                             phoneNumber = vcardPhone;
                         } else if (user != null && !TextUtils.isEmpty(user.phone)) {
-                            text = PhoneFormat.getInstance().format("+" + user.phone);
+                            String formattedPhone = PhoneFormat.getInstance().format("+" + user.phone);
+                            if (NekoConfig.hidePhoneNumber) {
+                                SpannableStringBuilder sb = new SpannableStringBuilder(formattedPhone);
+                                TextStyleSpan.TextStyleRun run = new TextStyleSpan.TextStyleRun();
+                                run.flags = TextStyleSpan.FLAG_STYLE_SPOILER;
+                                sb.setSpan(new TextStyleSpan(run), 0, formattedPhone.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                                text = sb;
+                            } else {
+                                text = formattedPhone;
+                            }
                             phoneNumber = user.phone;
                         } else {
                             text = LocaleController.getString(R.string.PhoneHidden);

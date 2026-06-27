@@ -23,6 +23,7 @@ import android.animation.LayoutTransition;
 import android.animation.ObjectAnimator;
 import android.animation.ValueAnimator;
 import android.annotation.SuppressLint;
+import androidx.annotation.RequiresApi;
 import android.app.Activity;
 import android.app.DatePickerDialog;
 import android.app.Dialog;
@@ -51,6 +52,7 @@ import android.graphics.PorterDuffColorFilter;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Region;
+import android.graphics.RenderEffect;
 import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.BitmapDrawable;
@@ -60,6 +62,7 @@ import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.os.Vibrator;
@@ -98,6 +101,7 @@ import android.view.ViewTreeObserver;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.PixelCopy;
 import android.view.animation.DecelerateInterpolator;
 import android.view.inputmethod.EditorInfo;
 import android.widget.EditText;
@@ -318,20 +322,21 @@ import org.telegram.ui.bots.BotCommandsMenuView;
 import org.telegram.ui.bots.BotWebViewSheet;
 import org.telegram.ui.bots.WebViewRequestProps;
 
-import tw.nekomimi.nekogram.BackButtonMenuRecent;
-import tw.nekomimi.nekogram.forward.ForwardContext;
-import tw.nekomimi.nekogram.forward.ForwardDrawable;
-import tw.nekomimi.nekogram.forward.ForwardItem;
-import tw.nekomimi.nekogram.forward.ForwardPopupWrapper;
-import tw.nekomimi.nekogram.MessageDetailsActivity;
-import tw.nekomimi.nekogram.NekoConfig;
-import tw.nekomimi.nekogram.helpers.MessageHelper;
-import tw.nekomimi.nekogram.helpers.QrHelper;
-import tw.nekomimi.nekogram.helpers.EmojiHelper;
-import tw.nekomimi.nekogram.helpers.WebAppHelper;
-import tw.nekomimi.nekogram.streaming.MediaStreamingProvider;
-import tw.nekomimi.nekogram.translator.Translator;
-import tw.nekomimi.nekogram.translator.TranslatorSettingsPopupWrapper;
+import zxc.iconic.xenon.BackButtonMenuRecent;
+import zxc.iconic.xenon.forward.ForwardContext;
+import zxc.iconic.xenon.forward.ForwardDrawable;
+import zxc.iconic.xenon.forward.ForwardItem;
+import zxc.iconic.xenon.forward.ForwardPopupWrapper;
+import zxc.iconic.xenon.MessageDetailsActivity;
+import zxc.iconic.xenon.NekoConfig;
+import zxc.iconic.xenon.telega.TelegaDetector;
+import zxc.iconic.xenon.helpers.MessageHelper;
+import zxc.iconic.xenon.helpers.QrHelper;
+import zxc.iconic.xenon.helpers.EmojiHelper;
+import zxc.iconic.xenon.helpers.WebAppHelper;
+import zxc.iconic.xenon.streaming.MediaStreamingProvider;
+import zxc.iconic.xenon.translator.Translator;
+import zxc.iconic.xenon.translator.TranslatorSettingsPopupWrapper;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -447,6 +452,8 @@ public class ChatActivity extends BaseFragment implements
     private ActionBarMenu.LazyItem attachItem;
     private ActionBarMenuItem.Item savedChatsItem, savedChatsGap;;
     private ActionBarMenuItem headerItem;
+    private final java.util.List<ActionBarMenuItem.Item> pluginMenuItems = new java.util.ArrayList<>();
+    private java.io.File pendingPluginCacheFile;
     private ActionBarMenu.LazyItem editTextItem;
     protected ActionBarMenuItem searchItem;
     protected ActionBarMenuItem topicCreateItem;
@@ -1047,6 +1054,8 @@ public class ChatActivity extends BaseFragment implements
     private int scrimPopupX, scrimPopupY;
     private ActionBarMenuSubItem[] scrimPopupWindowItems;
     private ActionBarMenuSubItem menuDeleteItem;
+    private ImageView popupBlurOverlayView;
+    private Bitmap popupBlurOverlayBitmap;
     private final Runnable updateDeleteItemRunnable = new Runnable() {
         @Override
         public void run() {
@@ -3581,6 +3590,10 @@ public class ChatActivity extends BaseFragment implements
             AndroidUtilities.removeFromParent(starReactionsOverlay);
             starReactionsOverlay = null;
         }
+        if (pendingPluginCacheFile != null) {
+            pendingPluginCacheFile.delete();
+            pendingPluginCacheFile = null;
+        }
     }
 
     private static class ChatActivityTextSelectionHelper extends TextSelectionHelper.ChatListTextSelectionHelper {
@@ -4230,6 +4243,16 @@ public class ChatActivity extends BaseFragment implements
                     dumpCanvas();
                 } else if (id == 889) {
                     sendDebugRichMessage();
+                } else if (id >= 10000 && id < 20000) {
+                    if (NekoConfig.pluginsEnabled) {
+                        int itemIndex = id - 10000;
+                        org.luaj.vm2.LuaValue ctx = org.luaj.vm2.LuaValue.tableOf(new org.luaj.vm2.LuaValue[]{
+                                org.luaj.vm2.LuaValue.valueOf("item"), org.luaj.vm2.LuaValue.valueOf(itemIndex),
+                                org.luaj.vm2.LuaValue.valueOf("peer"), org.luaj.vm2.LuaValue.valueOf(dialog_id)
+                        });
+                        zxc.iconic.xenon.plugins.PluginManager.getInstance().fire("onChatMenuItemClick", ctx);
+                        rebuildPluginMenuItems(dialog_id);
+                    }
                 }
             }
         });
@@ -4682,6 +4705,27 @@ public class ChatActivity extends BaseFragment implements
 
         if (BuildConfig.DEBUG_PRIVATE_VERSION && headerItem != null) {
             headerItem.addSubItem(888, R.drawable.menu_download_round, "Dump Canvas");
+        }
+
+        // --- Plugin menu items ---
+        if (NekoConfig.pluginsEnabled && headerItem != null) {
+            org.luaj.vm2.LuaValue ctx = org.luaj.vm2.LuaValue.tableOf(new org.luaj.vm2.LuaValue[]{
+                    org.luaj.vm2.LuaValue.valueOf("peer"), org.luaj.vm2.LuaValue.valueOf(dialog_id)
+            });
+            pluginMenuItems.clear();
+            org.luaj.vm2.LuaValue res = zxc.iconic.xenon.plugins.PluginManager.getInstance().fireReturn("onChatMenuBuild", ctx);
+            if (res != null && res.istable()) {
+                int len = res.length();
+                for (int i = 0; i < len; i++) {
+                    org.luaj.vm2.LuaValue item = res.get(i + 1);
+                    if (!item.istable()) continue;
+                    String text = item.get("text").optjstring("Plugin");
+                    String iconName = item.get("icon").optjstring("");
+                    int iconRes = zxc.iconic.xenon.plugins.PluginApi.getIconDrawable(iconName);
+                    ActionBarMenuItem.Item mi = headerItem.lazilyAddSubItem(10000 + i, iconRes, text);
+                    if (mi != null) pluginMenuItems.add(mi);
+                }
+            }
         }
 
         actionModeViews.clear();
@@ -6499,6 +6543,26 @@ public class ChatActivity extends BaseFragment implements
                             canvas.translate(dp(24) * getSideMenuAlpha(), 0f);
                         }
                         imageReceiver.draw(canvas);
+                        if (NekoConfig.showOnlineDotsInChat && updateVisibility && mcell instanceof ChatMessageCell) {
+                            ChatMessageCell cmcell = (ChatMessageCell) mcell;
+                            TLRPC.User cellUser = cmcell.getCurrentUser();
+                            if (cellUser != null && !cellUser.bot && !cellUser.self) {
+                                TLRPC.User freshUser = MessagesController.getInstance(currentAccount).getUser(cellUser.id);
+                                if (freshUser != null) {
+                                    cellUser = freshUser;
+                                }
+                                if (cellUser.status != null && (cellUser.status.expires > ConnectionsManager.getInstance(currentAccount).getCurrentTime() || MessagesController.getInstance(currentAccount).onlinePrivacy.containsKey(cellUser.id))) {
+                                    float dotRadius = dp(5);
+                                    float borderRadius = dp(7);
+                                    float cx = imageReceiver.getImageX2() - dp(10);
+                                    float cy = imageReceiver.getImageY2() - dp(6);
+                                    Theme.dialogs_onlineCirclePaint.setColor(Theme.getColor(Theme.key_windowBackgroundWhite));
+                                    canvas.drawCircle(cx, cy, borderRadius, Theme.dialogs_onlineCirclePaint);
+                                    Theme.dialogs_onlineCirclePaint.setColor(Theme.getColor(Theme.key_chats_onlineCircle));
+                                    canvas.drawCircle(cx, cy, dotRadius, Theme.dialogs_onlineCirclePaint);
+                                }
+                            }
+                        }
                         canvas.restore();
 
                         if (!replaceAnimation && child.getTranslationY() != 0) {
@@ -10864,6 +10928,27 @@ public class ChatActivity extends BaseFragment implements
 
     public ActionBarMenuItem getHeaderItem() {
         return headerItem;
+    }
+
+    private void rebuildPluginMenuItems(long dialogId) {
+        if (headerItem == null || pluginMenuItems.isEmpty()) return;
+        try {
+            org.luaj.vm2.LuaValue ctx = org.luaj.vm2.LuaValue.tableOf(new org.luaj.vm2.LuaValue[]{
+                    org.luaj.vm2.LuaValue.valueOf("peer"), org.luaj.vm2.LuaValue.valueOf(dialogId)
+            });
+            org.luaj.vm2.LuaValue res = zxc.iconic.xenon.plugins.PluginManager.getInstance().fireReturn("onChatMenuBuild", ctx);
+            if (res != null && res.istable()) {
+                int len = Math.min(res.length(), pluginMenuItems.size());
+                for (int i = 0; i < len; i++) {
+                    org.luaj.vm2.LuaValue entry = res.get(i + 1);
+                    if (!entry.istable()) continue;
+                    String text = entry.get("text").optjstring("Plugin");
+                    pluginMenuItems.get(i).setText(text);
+                }
+            }
+        } catch (Exception e) {
+            FileLog.e(e);
+        }
     }
 
     private void playReactionAnimation(Integer messageId) {
@@ -19790,7 +19875,26 @@ public class ChatActivity extends BaseFragment implements
                     }
                 } else if (threadMessageId > 0) {
                     final TLRPC.User user = getMessagesController().getUser(threadMessageId);
-                    avatarContainer.setTitle(AndroidUtilities.removeRTL(AndroidUtilities.removeDiacritics(UserObject.getUserName(user))), user.scam, user.fake, user.verified, user.premium, user.emoji_status, animated);
+                    CharSequence userName = AndroidUtilities.removeRTL(AndroidUtilities.removeDiacritics(UserObject.getUserName(user)));
+                    
+                    boolean telegaWarned = false;
+                    // Добавить значок Telega детектора
+                    if (NekoConfig.telegaDetectorEnabled && user != null && !user.bot) {
+                        int telegaState = TelegaDetector.getState(user.id);
+                        if (telegaState == TelegaDetector.STATE_UNKNOWN) {
+                            TelegaDetector.requestState(user.id, false, state -> {
+                                if (user != null && user.id == threadMessageId) {
+                                    updateTitle(true);
+                                }
+                            });
+                        } else if (telegaState == TelegaDetector.STATE_IS_TELEGA || telegaState == TelegaDetector.STATE_WAS_TELEGA) {
+                            userName = TextUtils.concat(userName, " ⚠️");
+                            telegaWarned = true;
+                        }
+                    }
+                    
+                    avatarContainer.setTitle(userName, user.scam, user.fake, user.verified, user.premium, user.emoji_status, animated);
+                    applyTelegaTitleClick(telegaWarned);
                 } else {
                     TLRPC.Chat chat = getMessagesController().getChat(-threadMessageId);
                     if (chat == null) chat = currentChat;
@@ -19829,7 +19933,29 @@ public class ChatActivity extends BaseFragment implements
             } else if (UserObject.isUserSelf(user)) {
                 avatarContainer.setTitle(LocaleController.getString(R.string.MyNotes));
             } else if (user != null) {
-                avatarContainer.setTitle(AndroidUtilities.removeRTL(AndroidUtilities.removeDiacritics(UserObject.getUserName(user))));
+                CharSequence userName = AndroidUtilities.removeRTL(AndroidUtilities.removeDiacritics(UserObject.getUserName(user)));
+                
+                boolean telegaWarned = false;
+                // Добавить значок Telega детектора
+                if (NekoConfig.telegaDetectorEnabled && !user.bot) {
+                    int telegaState = TelegaDetector.getState(user.id);
+                    if (telegaState == TelegaDetector.STATE_UNKNOWN) {
+                        long userId = user.id;
+                        long finalDialogId = dialogId;
+                        TLRPC.User finalUser = user;
+                        TelegaDetector.requestState(user.id, false, state -> {
+                            if (finalUser != null && finalUser.id == finalDialogId) {
+                                updateTitle(true);
+                            }
+                        });
+                    } else if (telegaState == TelegaDetector.STATE_IS_TELEGA || telegaState == TelegaDetector.STATE_WAS_TELEGA) {
+                        userName = TextUtils.concat(userName, " ⚠️");
+                        telegaWarned = true;
+                    }
+                }
+                
+                avatarContainer.setTitle(userName);
+                applyTelegaTitleClick(telegaWarned);
             } else if (chat != null) {
                 avatarContainer.setTitle(AndroidUtilities.removeRTL(AndroidUtilities.removeDiacritics(chat.title)));
             } else {
@@ -19865,11 +19991,57 @@ public class ChatActivity extends BaseFragment implements
             if (currentUser.self) {
                 avatarContainer.setTitle(LocaleController.getString(R.string.SavedMessages));
             } else {
-                avatarContainer.setTitle(AndroidUtilities.removeRTL(AndroidUtilities.removeDiacritics(UserObject.getUserName(currentUser))), currentUser.scam, currentUser.fake, currentUser.verified, getMessagesController().isPremiumUser(currentUser), !MessagesController.isSupportUser(currentUser) ? currentUser.emoji_status : null, animated);
+                CharSequence userName = AndroidUtilities.removeRTL(AndroidUtilities.removeDiacritics(UserObject.getUserName(currentUser)));
+                
+                boolean telegaWarned = false;
+                // Добавить значок Telega детектора
+                if (NekoConfig.telegaDetectorEnabled && !currentUser.bot) {
+                    int telegaState = TelegaDetector.getState(currentUser.id);
+                    if (telegaState == TelegaDetector.STATE_UNKNOWN) {
+                        long userId = currentUser.id;
+                        TelegaDetector.requestState(currentUser.id, false, state -> {
+                            if (currentUser != null && currentUser.id == userId) {
+                                updateTitle(true);
+                            }
+                        });
+                    } else if (telegaState == TelegaDetector.STATE_IS_TELEGA || telegaState == TelegaDetector.STATE_WAS_TELEGA) {
+                        userName = TextUtils.concat(userName, " ⚠️");
+                        telegaWarned = true;
+                    }
+                }
+                
+                avatarContainer.setTitle(userName, currentUser.scam, currentUser.fake, currentUser.verified, getMessagesController().isPremiumUser(currentUser), !MessagesController.isSupportUser(currentUser) ? currentUser.emoji_status : null, animated);
+                applyTelegaTitleClick(telegaWarned);
             }
         }
         setParentActivityTitle(avatarContainer.getTitleTextView().getText());
         updateTitleIcons();
+    }
+
+    /**
+     * Wires (or clears) the on-tap bulletin for the Telega-detector warning
+     * embedded in the chat title (the trailing ⚠️ emoji). Tapping the title
+     * while the warning is active surfaces the same bottom-of-screen bulletin
+     * that {@link ProfileActivity} already shows. When the warning is
+     * inactive, the listener is cleared so taps fall through to the normal
+     * avatar-container click that opens the profile.
+     */
+    private void applyTelegaTitleClick(boolean telegaWarned) {
+        if (avatarContainer == null) {
+            return;
+        }
+        SimpleTextView title = avatarContainer.getTitleTextView();
+        if (title == null) {
+            return;
+        }
+        if (telegaWarned) {
+            title.setOnClickListener(v -> BulletinFactory.of(ChatActivity.this)
+                    .createSimpleBulletin(R.raw.chats_infotip, LocaleController.getString(R.string.TelegaDetectorStatusRisk))
+                    .show());
+        } else {
+            title.setOnClickListener(null);
+            title.setClickable(false);
+        }
     }
 
     public void updateTopicTitleIcon() {
@@ -21653,6 +21825,17 @@ public class ChatActivity extends BaseFragment implements
                 }
             }
             checkGroupMessagesOrder();
+            if (NekoConfig.enableSaveDeletedMessages) {
+                var ctrl = zxc.iconic.xenon.deleted.XenonDeletedMessagesController.getInstance();
+                java.util.Set<Integer> savedIds = ctrl.getAllSavedMessageIds(dialog_id, currentAccount);
+                SparseArray<MessageObject> dict = messagesDict[loadIndex];
+                for (int i = 0; i < dict.size(); i++) {
+                    MessageObject obj = dict.valueAt(i);
+                    if (savedIds.contains(obj.getId())) {
+                        obj.messageOwner.ayuDeleted = true;
+                    }
+                }
+            }
             if (createUnreadLoading) {
                 createUnreadMessageAfterId = 0;
             }
@@ -22214,6 +22397,9 @@ public class ChatActivity extends BaseFragment implements
                     avatarContainer.updateOnlineCount();
                 }
                 updateSubtitle = true;
+                if (NekoConfig.showOnlineDotsInChat) {
+                    updateVisibleRows();
+                }
             }
             if ((updateMask & MessagesController.UPDATE_MASK_AVATAR) != 0 || (updateMask & MessagesController.UPDATE_MASK_CHAT_AVATAR) != 0 || (updateMask & MessagesController.UPDATE_MASK_NAME) != 0) {
                 checkAndUpdateAvatar();
@@ -22615,6 +22801,19 @@ public class ChatActivity extends BaseFragment implements
                     finishFragment();
                 } else {
                     removeSelfFromStack();
+                }
+            }
+        } else if (id == NotificationCenter.messagesDeletedNotification) {
+            long dialogId = (Long) args[0];
+            if (getDialogId() != dialogId) return;
+            if (chatAdapter == null) return;
+            ArrayList<Integer> messageIds = (ArrayList<Integer>) args[1];
+            for (int a = 0, N = messageIds.size(); a < N; a++) {
+                int mid = messageIds.get(a);
+                MessageObject currentMessage = messagesDict[0].get(mid);
+                if (currentMessage != null) {
+                    currentMessage.messageOwner.ayuDeleted = true;
+                    chatAdapter.updateRowWithMessageObject(currentMessage, false, false);
                 }
             }
         } else if (id == NotificationCenter.quickRepliesDeleted) {
@@ -25201,7 +25400,7 @@ public class ChatActivity extends BaseFragment implements
     private Pattern sponsoredUrlPattern;
     private MessageObject botSponsoredMessage;
     private void addSponsoredMessages(boolean animated) {
-        if (sponsoredMessagesAdded || chatMode != 0 || !ChatObject.isChannel(currentChat) && !UserObject.isBot(currentUser) || !forwardEndReached[0] || getUserConfig().isPremium() && getMessagesController().isSponsoredDisabled() || isReport()) {
+        if (sponsoredMessagesAdded || chatMode != 0 || !ChatObject.isChannel(currentChat) && !UserObject.isBot(currentUser) || !forwardEndReached[0] || getUserConfig().isPremium() && getMessagesController().isSponsoredDisabled() || isReport() || zxc.iconic.xenon.NekoConfig.removeAds) {
             return;
         }
         MessagesController.SponsoredMessagesInfo res = getMessagesController().getSponsoredMessages(dialog_id);
@@ -26573,6 +26772,9 @@ public class ChatActivity extends BaseFragment implements
         for (int a = 0; a < size; a++) {
             Integer mid = markAsDeletedMessages.get(a);
             MessageObject obj = chatAdapter != null && chatAdapter.isFiltered ? filteredMessagesDict.get(mid) :  messagesDict[loadIndex].get(mid);
+            if (NekoConfig.enableSaveDeletedMessages && obj != null && !zxc.iconic.xenon.deleted.XenonDeletedState.isDeletePermitted(getDialogId(), mid)) {
+                continue;
+            }
             if (selectedObject != null && obj == selectedObject || obj != null && selectedObjectGroup != null && selectedObjectGroup == groupedMessagesMap.get(obj.getGroupId())) {
                 closeMenu();
             }
@@ -30008,6 +30210,7 @@ public class ChatActivity extends BaseFragment implements
     @Override
     public void onResume() {
         super.onResume();
+        zxc.iconic.xenon.plugins.PluginManager.setCurrentDialogId(dialog_id);
         checkShowBlur(false);
         activityResumeTime = System.currentTimeMillis();
         if (openImport && getSendMessagesHelper().getImportingHistory(dialog_id) != null) {
@@ -30864,6 +31067,80 @@ public class ChatActivity extends BaseFragment implements
 
         if (tagSelector != null) {
             hideTagSelector();
+        }
+    }
+
+    @RequiresApi(api = Build.VERSION_CODES.S)
+    private void applyPopupBlur(View cellView) {
+        if (!NekoConfig.blurPopupInChat || getParentActivity() == null) return;
+        android.view.Window window = getParentActivity().getWindow();
+        if (window == null) return;
+        View decorView = window.getDecorView();
+        int dw = decorView.getWidth();
+        int dh = decorView.getHeight();
+        if (dw <= 0 || dh <= 0) return;
+        removePopupBlur();
+        int pixelation = NekoConfig.blurPixelation;
+        int downscale = Math.max(1, 1 + pixelation / 5);
+        int bw = Math.max(1, dw / downscale);
+        int bh = Math.max(1, dh / downscale);
+        Bitmap bitmap = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888);
+        popupBlurOverlayBitmap = bitmap;
+        PixelCopy.request(window, bitmap, copyResult -> {
+            if (copyResult != PixelCopy.SUCCESS || popupBlurOverlayBitmap != bitmap) {
+                bitmap.recycle();
+                return;
+            }
+            ImageView imageView = new ImageView(getContext());
+            imageView.setScaleType(ImageView.ScaleType.FIT_XY);
+            imageView.setImageBitmap(bitmap);
+            boolean disableBlur = NekoConfig.disableBlurBs;
+            float targetBlur = disableBlur ? 0f : NekoConfig.blurOverlayRadius * 8f;
+            if (NekoConfig.blurSmoothly) {
+                imageView.setRenderEffect(RenderEffect.createBlurEffect(0f, 0f, Shader.TileMode.CLAMP));
+            } else {
+                imageView.setRenderEffect(RenderEffect.createBlurEffect(
+                    targetBlur, targetBlur, Shader.TileMode.CLAMP
+                ));
+            }
+            imageView.setLayoutParams(new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+            ));
+            ViewGroup content = (ViewGroup) getParentActivity().findViewById(android.R.id.content);
+            if (content != null) {
+                content.addView(imageView);
+                popupBlurOverlayView = imageView;
+                if (NekoConfig.blurSmoothly) {
+                    ValueAnimator animator = ValueAnimator.ofFloat(0f, targetBlur);
+                    animator.setDuration(NekoConfig.blurAnimationDuration);
+                    animator.setInterpolator(new CubicBezierInterpolator(0.3f, 0.8f, 0f, 1f));
+                    animator.addUpdateListener(a -> {
+                        if (popupBlurOverlayView != null) {
+                            float val = (float) a.getAnimatedValue();
+                            popupBlurOverlayView.setRenderEffect(RenderEffect.createBlurEffect(
+                                val, val, Shader.TileMode.CLAMP
+                            ));
+                        }
+                    });
+                    animator.start();
+                } else {
+                    imageView.setAlpha(0f);
+                    imageView.animate().alpha(1f).setDuration(200).setInterpolator(CubicBezierInterpolator.DEFAULT).start();
+                }
+            }
+        }, new Handler(Looper.getMainLooper()));
+    }
+
+    private void removePopupBlur() {
+        if (popupBlurOverlayView != null) {
+            popupBlurOverlayView.animate().cancel();
+            ViewGroup parent = (ViewGroup) popupBlurOverlayView.getParent();
+            if (parent != null) parent.removeView(popupBlurOverlayView);
+            popupBlurOverlayView = null;
+        }
+        if (popupBlurOverlayBitmap != null) {
+            popupBlurOverlayBitmap.recycle();
+            popupBlurOverlayBitmap = null;
         }
     }
 
@@ -32475,6 +32752,7 @@ public class ChatActivity extends BaseFragment implements
             scrimPopupWindow = new ActionBarPopupWindow(scrimPopupContainerLayout, LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT) {
                 @Override
                 public void dismiss() {
+                    removePopupBlur();
                     super.dismiss();
                     if (scrimPopupWindow != this) {
                         return;
@@ -32499,6 +32777,7 @@ public class ChatActivity extends BaseFragment implements
 
                 @Override
                 public void dismiss(boolean animated) {
+                    removePopupBlur();
                     super.dismiss(animated);
                     if (finalReactionsLayout1 != null) {
                         finalReactionsLayout1.dismissParent(animated);
@@ -32570,6 +32849,7 @@ public class ChatActivity extends BaseFragment implements
                 if (waitForLangDetection.get() || waitForQr.get()) {
                     return;
                 }
+                applyPopupBlur(v);
                 scrimPopupWindow.showAtLocation(chatListView, Gravity.LEFT | Gravity.TOP, finalPopupX, finalPopupY);
                 if (isReactionsAvailableFinal && finalReactionsLayout != null) {
                     finalReactionsLayout.startEnterAnimation(true);
@@ -35511,6 +35791,7 @@ public class ChatActivity extends BaseFragment implements
             return;
         }
         if (!actionBar.isSearchFieldVisible()) {
+            fragmentView.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
             animatorSearchFieldVisibility.setValue(true, true);
             if (headerItem != null) {
                 headerItem.setVisibility(View.GONE);
@@ -40781,6 +41062,7 @@ public class ChatActivity extends BaseFragment implements
             scrimPopupWindow = new ActionBarPopupWindow(scrimPopupContainerLayout, LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT) {
                 @Override
                 public void dismiss() {
+                    removePopupBlur();
                     super.dismiss();
                     if (scrimPopupWindow != this) {
                         return;
@@ -40846,6 +41128,7 @@ public class ChatActivity extends BaseFragment implements
             if (scrimPopupContainerLayout.getVisibility() != View.VISIBLE) {
                 scrimViewReactionOffset = 0;
             }
+            applyPopupBlur(cell);
             scrimPopupWindow.showAtLocation(chatListView, Gravity.LEFT | Gravity.TOP, scrimPopupX = popupX, scrimPopupY = popupY);
 
             chatListView.stopScroll();
@@ -41653,6 +41936,37 @@ public class ChatActivity extends BaseFragment implements
                         handled = true;
                     }
                     if (!handled) {
+                        // Intercept .xplugin file taps to show install BottomSheet
+                        if (media.document != null) {
+                            String docName = messageObject.getFileName();
+                            if (docName != null && docName.toLowerCase(java.util.Locale.US).endsWith(".xplugin")) {
+                                java.io.File pluginFile = org.telegram.messenger.FileLoader.getInstance(currentAccount).getPathToMessage(messageObject.messageOwner);
+                                long currentDialog = dialog_id;
+                                if (pluginFile != null && pluginFile.exists()) {
+                                    pendingPluginCacheFile = pluginFile;
+                                    zxc.iconic.xenon.settings.NekoPluginsActivity.showInstallBottomSheet(
+                                            getParentActivity(), pluginFile, themeDelegate,
+                                            plugin -> {
+                                                if (!plugin.settings.isEmpty()) {
+                                                    BulletinFactory.of(ChatActivity.this).createSimpleBulletin(
+                                                            R.raw.chats_infotip,
+                                                            org.telegram.messenger.LocaleController.getString(R.string.PluginsInstallSuccess),
+                                                            org.telegram.messenger.LocaleController.getString(R.string.PluginsSettings),
+                                                            () -> presentFragment(new zxc.iconic.xenon.settings.PluginSettingsActivity().setPlugin(plugin))
+                                                    ).show();
+                                                } else {
+                                                    BulletinFactory.of(ChatActivity.this).createSimpleBulletin(
+                                                            R.raw.chats_infotip,
+                                                            org.telegram.messenger.LocaleController.getString(R.string.PluginsInstallSuccess)
+                                                    ).show();
+                                                }
+                                                rebuildPluginMenuItems(currentDialog);
+                                            }
+                                    );
+                                    return;
+                                }
+                            }
+                        }
                         try {
                             AndroidUtilities.openForView(message, getParentActivity(), themeDelegate, false);
                         } catch (Exception e) {
@@ -41966,6 +42280,93 @@ public class ChatActivity extends BaseFragment implements
                         return;
                     } else {
                         scrollToPositionOnRecreate = -1;
+                    }
+                }
+                String docNameLower = message.getDocumentName().toLowerCase();
+                if (docNameLower.endsWith("xenon_settings_backup.json")) {
+                    File cfgFile = null;
+                    if (message.messageOwner.attachPath != null && message.messageOwner.attachPath.length() != 0) {
+                        File f = new File(message.messageOwner.attachPath);
+                        if (f.exists()) {
+                            cfgFile = f;
+                        }
+                    }
+                    if (cfgFile == null) {
+                        File f = getFileLoader().getPathToMessage(message.messageOwner);
+                        if (f.exists()) {
+                            cfgFile = f;
+                        }
+                    }
+                    if (cfgFile != null) {
+                        try {
+                            String content = new String(java.nio.file.Files.readAllBytes(cfgFile.toPath()), "UTF-8");
+                            new org.json.JSONObject(content);
+                            Activity activity = getParentActivity();
+                            if (activity != null) {
+                                AlertDialog.Builder builder = new AlertDialog.Builder(activity);
+                                builder.setTitle(LocaleController.getString(R.string.Nekogram));
+                                builder.setMessage(LocaleController.getString(R.string.HowToOpenConfigFile));
+                                builder.setPositiveButton(LocaleController.getString(R.string.OpenAsXenonConfig), (dialog, which) -> {
+                                    try {
+                                        NekoConfig.importConfigs(content);
+                                        BulletinFactory.global().createSimpleBulletin(R.raw.chats_infotip, LocaleController.getString(R.string.ImportSettingsSuccess)).show();
+                                    } catch (Exception e) {
+                                        FileLog.e(e);
+                                        BulletinFactory.global().createSimpleBulletin(R.raw.chats_infotip, LocaleController.getString(R.string.ImportSettingsFailed)).show();
+                                    }
+                                });
+                                builder.setNegativeButton(LocaleController.getString(R.string.OpenAsFile), (dialog, which) -> {
+                                    try {
+                                        AndroidUtilities.openForView(message, activity, themeDelegate, false);
+                                    } catch (Exception e) {
+                                        FileLog.e(e);
+                                        alertUserOpenError(message);
+                                    }
+                                });
+                                builder.show();
+                                return;
+                            }
+                        } catch (Exception ignored) {}
+                    }
+                }
+                // Intercept .xplugin file taps in regular file handler
+                if (message.getDocumentName().toLowerCase(java.util.Locale.US).endsWith(".xplugin")) {
+                    java.io.File pluginFile = null;
+                    if (message.messageOwner.attachPath != null && message.messageOwner.attachPath.length() != 0) {
+                        java.io.File f = new java.io.File(message.messageOwner.attachPath);
+                        if (f.exists()) {
+                            pluginFile = f;
+                        }
+                    }
+                    if (pluginFile == null) {
+                        java.io.File f = getFileLoader().getPathToMessage(message.messageOwner);
+                        if (f.exists()) {
+                            pluginFile = f;
+                        }
+                    }
+                    if (pluginFile != null) {
+                        pendingPluginCacheFile = pluginFile;
+                        long currentDialog = dialog_id;
+                        zxc.iconic.xenon.settings.NekoPluginsActivity.showInstallBottomSheet(
+                                getParentActivity(), pluginFile, themeDelegate,
+                                plugin -> {
+                                    if (!plugin.settings.isEmpty()) {
+                                        BulletinFactory.of(ChatActivity.this).createSimpleBulletin(
+                                                R.raw.chats_infotip,
+                                                org.telegram.messenger.LocaleController.getString(R.string.PluginsInstallSuccess),
+                                                org.telegram.messenger.LocaleController.getString(R.string.PluginsSettings),
+                                                () -> presentFragment(new zxc.iconic.xenon.settings.PluginSettingsActivity().setPlugin(plugin))
+                                        ).show();
+                                    } else {
+                                        BulletinFactory.of(ChatActivity.this).createSimpleBulletin(
+                                                R.raw.chats_infotip,
+                                                org.telegram.messenger.LocaleController.getString(R.string.PluginsInstallSuccess)
+                                        ).show();
+                                    }
+                                    rebuildPluginMenuItems(currentDialog);
+                                }
+                        );
+                        return;
                     }
                 }
                 boolean handled = false;
@@ -45870,6 +46271,7 @@ public class ChatActivity extends BaseFragment implements
             scrimPopupWindow = new ActionBarPopupWindow(scrimPopupContainerLayout, LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT) {
                 @Override
                 public void dismiss() {
+                    removePopupBlur();
                     super.dismiss();
                     if (scrimPopupWindow != this) {
                         return;
@@ -45935,6 +46337,7 @@ public class ChatActivity extends BaseFragment implements
             if (scrimPopupContainerLayout.getVisibility() != View.VISIBLE) {
                 scrimViewReactionOffset = 0;
             }
+            applyPopupBlur(cell);
             scrimPopupWindow.showAtLocation(chatListView, Gravity.LEFT | Gravity.TOP, scrimPopupX = popupX, scrimPopupY = popupY);
 
             chatListView.stopScroll();
@@ -46630,7 +47033,7 @@ public class ChatActivity extends BaseFragment implements
                         options.add(OPTION_SET_REMINDER);
                         icons.add(R.drawable.msg_calendar2);
                     }
-                    if (NekoConfig.showAddToSavedMessages && !UserObject.isUserSelf(currentUser)) {
+                    if (NekoConfig.showAddToSavedMessages && (currentUser == null && NekoConfig.showAddToSavedMessagesInGroups || currentUser != null && !UserObject.isUserSelf(currentUser))) {
                         items.add(LocaleController.getString(R.string.AddToSavedMessages));
                         options.add(OPTION_SAVE_MESSAGE);
                         icons.add(R.drawable.msg_saved);

@@ -15,23 +15,29 @@ import android.animation.AnimatorListenerAdapter;
 import android.animation.AnimatorSet;
 import android.animation.ObjectAnimator;
 import android.animation.ValueAnimator;
+import android.view.Choreographer;
+import android.app.Activity;
 import android.app.Dialog;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.res.Configuration;
 import android.graphics.Canvas;
 import android.graphics.ColorFilter;
+import android.graphics.RenderEffect;
 import android.graphics.Insets;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.graphics.PorterDuff;
 import android.graphics.PorterDuffColorFilter;
+import android.graphics.Shader;
 import android.graphics.PorterDuffXfermode;
 import android.graphics.Rect;
 import android.graphics.Region;
 import android.graphics.drawable.Drawable;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.TextUtils;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -43,6 +49,7 @@ import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowInsets;
+import android.view.PixelCopy;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.animation.Interpolator;
@@ -77,8 +84,15 @@ import org.telegram.ui.Components.Bulletin;
 import org.telegram.ui.Components.BulletinFactory;
 import org.telegram.ui.Components.CubicBezierInterpolator;
 import org.telegram.ui.Components.LayoutHelper;
+import org.telegram.messenger.SharedConfig;
+import org.telegram.ui.Components.blur3.drawable.BlurredBackgroundDrawable;
+import org.telegram.ui.Components.blur3.drawable.BlurredBackgroundDrawableRenderNode;
+import org.telegram.ui.Components.blur3.drawable.color.impl.BlurredBackgroundProviderImpl;
+import org.telegram.ui.Components.blur3.source.BlurredBackgroundSourceRenderNode;
 import org.telegram.ui.LaunchActivity;
 
+import android.annotation.SuppressLint;
+import android.graphics.Bitmap;
 import java.util.ArrayList;
 
 public class BottomSheet extends Dialog implements BaseFragment.AttachedSheet {
@@ -128,6 +142,10 @@ public class BottomSheet extends Dialog implements BaseFragment.AttachedSheet {
     private int cellType;
     private Integer selectedPos;
     protected SheetBackDrawable backDrawable = new SheetBackDrawable();
+    private Bitmap blurOverlayBitmap;
+    private View blurOverlayView;
+    private Choreographer.FrameCallback blurRefreshCallback;
+    private int blurRefreshFrameCounter;
 
     protected static class SheetBackDrawable extends Drawable {
         private final Paint bgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -218,6 +236,14 @@ public class BottomSheet extends Dialog implements BaseFragment.AttachedSheet {
     protected int dimBehindAlpha = 51;
 
     protected boolean allowNestedScroll = true;
+
+    // ----- Liquid glass background for attached-mode BottomSheets -----
+    @Nullable private BlurredBackgroundSourceRenderNode glassSource;
+    @Nullable private BlurredBackgroundDrawable glassDrawable;
+    @Nullable private View glassHostView;
+    private boolean glassApplied;
+
+
 
     protected Drawable shadowDrawable;
     protected int backgroundPaddingTop;
@@ -1540,9 +1566,163 @@ public class BottomSheet extends Dialog implements BaseFragment.AttachedSheet {
         }
     }
 
+    @RequiresApi(api = Build.VERSION_CODES.S)
+    private void setupGpuBlur(Activity activity, int radius) {
+        Window window = activity.getWindow();
+        if (window == null) {
+            FileLog.d("XenonBlur: window is null, skipping GPU blur");
+            return;
+        }
+        final View decorView = window.getDecorView();
+        int dw = decorView.getWidth();
+        int dh = decorView.getHeight();
+        if (dw <= 0 || dh <= 0) {
+            FileLog.d("XenonBlur: decorView size is " + dw + "x" + dh + ", skipping GPU blur");
+            return;
+        }
+        int pixelation = zxc.iconic.xenon.NekoConfig.blurPixelation;
+        int downscale = Math.max(1, 1 + pixelation / 5);
+        int bw = Math.max(1, dw / downscale);
+        int bh = Math.max(1, dh / downscale);
+        FileLog.d("XenonBlur: starting GPU blur, radius=" + radius + ", pixelation=" + pixelation + "->" + downscale + ", orig=" + dw + "x" + dh + ", capture=" + bw + "x" + bh);
+
+        final Bitmap bitmap = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888);
+        PixelCopy.request(window, bitmap, copyResult -> {
+            FileLog.d("XenonBlur: PixelCopy result=" + copyResult + " (SUCCESS=" + PixelCopy.SUCCESS + ")");
+            if (copyResult != PixelCopy.SUCCESS || dismissed) {
+                bitmap.recycle();
+                return;
+            }
+            attachBlurView(bitmap, radius, bw, bh);
+            if (zxc.iconic.xenon.NekoConfig.blurOverlayRefresh && !dismissed) {
+                setupGpuBlurRefresh(activity, window, dw, dh);
+            }
+        }, new Handler(Looper.getMainLooper()));
+    }
+
+    @RequiresApi(api = Build.VERSION_CODES.S)
+    private void attachBlurView(Bitmap bitmap, int radius, int bw, int bh) {
+        blurOverlayBitmap = bitmap;
+        ImageView imageView = new ImageView(getContext());
+        imageView.setScaleType(ImageView.ScaleType.FIT_XY);
+        imageView.setImageBitmap(bitmap);
+        blurOverlayView = imageView;
+        blurOverlayView.setLayoutParams(new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        boolean disableBlur = zxc.iconic.xenon.NekoConfig.disableBlurBs;
+        float targetBlur = disableBlur ? 0f : radius * 8f;
+        if (zxc.iconic.xenon.NekoConfig.blurSmoothly && !disableBlur) {
+            imageView.setRenderEffect(RenderEffect.createBlurEffect(0f, 0f, Shader.TileMode.CLAMP));
+        } else {
+            imageView.setRenderEffect(RenderEffect.createBlurEffect(
+                    targetBlur, targetBlur, Shader.TileMode.CLAMP
+            ));
+        }
+        if (container != null) {
+            container.post(() -> {
+                if (blurOverlayView != null && container != null && blurOverlayView.getParent() == null) {
+                    if (zxc.iconic.xenon.NekoConfig.blurSmoothly && !disableBlur) {
+                        container.addView(blurOverlayView, 0);
+                        ValueAnimator animator = ValueAnimator.ofFloat(0f, targetBlur);
+                        animator.setDuration(zxc.iconic.xenon.NekoConfig.blurAnimationDuration);
+                        animator.setInterpolator(new CubicBezierInterpolator(0.3f, 0.8f, 0f, 1f));
+                        animator.addUpdateListener(a -> {
+                            if (blurOverlayView != null) {
+                                float val = (float) a.getAnimatedValue();
+                                blurOverlayView.setRenderEffect(RenderEffect.createBlurEffect(
+                                        val, val, Shader.TileMode.CLAMP
+                                ));
+                            }
+                        });
+                        animator.start();
+                    } else {
+                        blurOverlayView.setAlpha(0f);
+                        container.addView(blurOverlayView, 0);
+                        blurOverlayView.animate()
+                                .alpha(1f)
+                                .setDuration(200)
+                                .setInterpolator(CubicBezierInterpolator.DEFAULT)
+                                .start();
+                    }
+                }
+            });
+        }
+    }
+
+    @RequiresApi(api = Build.VERSION_CODES.S)
+    private void setupGpuBlurRefresh(Activity activity, Window window, int dw, int dh) {
+        blurRefreshCallback = new Choreographer.FrameCallback() {
+            @Override
+            public void doFrame(long frameTimeNanos) {
+                if (dismissed) return;
+                blurRefreshFrameCounter++;
+                int interval = zxc.iconic.xenon.NekoConfig.blurOverlayRefreshInterval;
+                if (blurRefreshFrameCounter % interval != 0) {
+                    Choreographer.getInstance().postFrameCallback(this);
+                    return;
+                }
+                int currentRadius = zxc.iconic.xenon.NekoConfig.blurOverlayRadius;
+                if (currentRadius <= 0) {
+                    Choreographer.getInstance().postFrameCallback(this);
+                    return;
+                }
+                int pixelation = zxc.iconic.xenon.NekoConfig.blurPixelation;
+                int downscale = Math.max(1, 1 + pixelation / 5);
+                int bw = Math.max(1, dw / downscale);
+                int bh = Math.max(1, dh / downscale);
+                Bitmap newBitmap = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888);
+                PixelCopy.request(window, newBitmap, refreshResult -> {
+                    if (refreshResult == PixelCopy.SUCCESS && !dismissed) {
+                        applyBlurUpdate(newBitmap, currentRadius);
+                    } else {
+                        newBitmap.recycle();
+                    }
+                    if (!dismissed && zxc.iconic.xenon.NekoConfig.blurOverlayRefresh) {
+                        Choreographer.getInstance().postFrameCallback(blurRefreshCallback);
+                    }
+                }, new Handler(Looper.getMainLooper()));
+            }
+        };
+        Choreographer.getInstance().postFrameCallback(blurRefreshCallback);
+    }
+
+    @RequiresApi(api = Build.VERSION_CODES.S)
+    private void applyBlurUpdate(Bitmap newBitmap, int radius) {
+        if (blurOverlayView instanceof ImageView) {
+            ((ImageView) blurOverlayView).setImageBitmap(newBitmap);
+            applyBlurRadius(radius);
+        }
+        if (blurOverlayBitmap != null) {
+            blurOverlayBitmap.recycle();
+        }
+        blurOverlayBitmap = newBitmap;
+    }
+
+    @RequiresApi(api = Build.VERSION_CODES.S)
+    public void applyBlurRadius(int radius) {
+        if (blurOverlayView != null) {
+            float blur = zxc.iconic.xenon.NekoConfig.disableBlurBs ? 0f : radius * 8f;
+            blurOverlayView.setRenderEffect(RenderEffect.createBlurEffect(
+                    blur, blur, Shader.TileMode.CLAMP
+            ));
+        }
+    }
+
     @Override
     public void show() {
         if (!AndroidUtilities.isSafeToShow(getContext())) return;
+        if (zxc.iconic.xenon.NekoConfig.blurOverlay && blurOverlayBitmap == null) {
+            if (Build.VERSION.SDK_INT >= 31 && attachedFragment == null) {
+                Activity activity = AndroidUtilities.findActivity(getContext());
+                if (activity != null && !activity.isFinishing()) {
+                    setupGpuBlur(activity, zxc.iconic.xenon.NekoConfig.blurOverlayRadius);
+                } else {
+                    FileLog.d("XenonBlur: skip GPU blur — activity=" + activity + " finishing=" + (activity != null && activity.isFinishing()));
+                }
+            } else {
+                FileLog.d("XenonBlur: skip GPU blur — SDK=" + Build.VERSION.SDK_INT + " attached=" + (attachedFragment != null));
+            }
+        }
         if (attachedFragment != null) {
             onCreateInternal();
         } else {
@@ -1973,6 +2153,66 @@ public class BottomSheet extends Dialog implements BaseFragment.AttachedSheet {
             return;
         }
         dismissed = true;
+        if (blurOverlayView != null) {
+            if (zxc.iconic.xenon.NekoConfig.blurSmoothly && !zxc.iconic.xenon.NekoConfig.disableBlurBs) {
+                float currentBlur = zxc.iconic.xenon.NekoConfig.blurOverlayRadius * 8f;
+                Activity blurActivity = AndroidUtilities.findActivity(getContext());
+                if (blurActivity != null && !blurActivity.isFinishing() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    Window blurWindow = blurActivity.getWindow();
+                    if (blurWindow != null) {
+                        View blurDecor = blurWindow.getDecorView();
+                        int fw = blurDecor.getWidth();
+                        int fh = blurDecor.getHeight();
+                        if (fw > 0 && fh > 0) {
+                            Bitmap fullResBitmap = Bitmap.createBitmap(fw, fh, Bitmap.Config.ARGB_8888);
+                            PixelCopy.request(blurWindow, fullResBitmap, copyResult -> {
+                                if (copyResult == PixelCopy.SUCCESS && blurOverlayView instanceof ImageView && !dismissed) {
+                                    ((ImageView) blurOverlayView).setImageBitmap(fullResBitmap);
+                                } else {
+                                    fullResBitmap.recycle();
+                                }
+                            }, new Handler(Looper.getMainLooper()));
+                        }
+                    }
+                }
+                ValueAnimator reverseBlurAnim = ValueAnimator.ofFloat(currentBlur, 0f);
+                reverseBlurAnim.setDuration(zxc.iconic.xenon.NekoConfig.blurAnimationDuration);
+                reverseBlurAnim.setInterpolator(new CubicBezierInterpolator(0.3f, 0.8f, 0f, 1f));
+                reverseBlurAnim.addUpdateListener(a -> {
+                    if (blurOverlayView != null) {
+                        float val = (float) a.getAnimatedValue();
+                        blurOverlayView.setRenderEffect(RenderEffect.createBlurEffect(
+                                val, val, Shader.TileMode.CLAMP
+                        ));
+                    }
+                });
+                blurOverlayView.animate()
+                        .alpha(0f)
+                        .setDuration(zxc.iconic.xenon.NekoConfig.blurAnimationDuration)
+                        .setInterpolator(new CubicBezierInterpolator(0.3f, 0.8f, 0f, 1f))
+                        .start();
+                reverseBlurAnim.addListener(new AnimatorListenerAdapter() {
+                    @Override
+                    public void onAnimationEnd(Animator animation) {
+                        if (blurOverlayView != null && container != null) {
+                            container.removeView(blurOverlayView);
+                        }
+                    }
+                });
+                reverseBlurAnim.start();
+            } else {
+                blurOverlayView.animate()
+                        .alpha(0f)
+                        .setDuration(250)
+                        .setInterpolator(CubicBezierInterpolator.EASE_OUT)
+                        .withEndAction(() -> {
+                            if (blurOverlayView != null && container != null) {
+                                container.removeView(blurOverlayView);
+                            }
+                        })
+                        .start();
+            }
+        }
         if (onHideListener != null) {
             onHideListener.onDismiss(this);
         }
@@ -2102,8 +2342,93 @@ public class BottomSheet extends Dialog implements BaseFragment.AttachedSheet {
 
     }
 
-    protected void onContainerViewTranslation() {
 
+    @SuppressLint("NewApi")
+    private void setupGlassBackground() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return;
+        if (!SharedConfig.chatBlurEnabled()) return;
+        if (!zxc.iconic.xenon.NekoConfig.glassBottomSheet) return;
+        if (containerView == null || containerView.getWidth() == 0) return;
+
+        // Resolve the host view whose content will be captured as the glass source.
+        // Attached mode: the fragment's own layout container (same window as the sheet).
+        // Dialog mode:  the main activity's decor view (a separate window — its draw()
+        //               does NOT include the dialog, so the snapshot is always clean).
+        final View hostView;
+        if (attachedFragment != null) {
+            hostView = attachedFragment.getLayoutContainer();
+            if (hostView == null) return;
+        } else {
+            if (LaunchActivity.instance == null
+                    || LaunchActivity.instance.getWindow() == null) return;
+            hostView = LaunchActivity.instance.getWindow().getDecorView();
+        }
+        if (hostView.getWidth() == 0 || hostView.getHeight() == 0) return;
+
+        glassHostView = hostView;
+
+        // 1. Create RenderNode source.
+        glassSource = new BlurredBackgroundSourceRenderNode(null);
+
+        // 2. Snapshot hostView (captures the content behind the sheet).
+        final Bitmap hostSnapshot = Bitmap.createBitmap(
+                hostView.getWidth(), hostView.getHeight(), Bitmap.Config.ARGB_8888);
+        final android.graphics.Canvas snapshotCanvas = new android.graphics.Canvas(hostSnapshot);
+        hostView.draw(snapshotCanvas);
+
+        // 3. Draw snapshot into the RenderNode source (one-time).
+        final android.graphics.Canvas rc = glassSource.beginRecording(
+                hostView.getWidth(), hostView.getHeight());
+        rc.drawBitmap(hostSnapshot, 0f, 0f, null);
+        glassSource.endRecording();
+        hostSnapshot.recycle();
+
+        // 4. Set blur radius from glass config.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            glassSource.setBlur(zxc.iconic.xenon.NekoConfig.useAdvancedLiquidGlass
+                    ? (float) dp(Math.max(1, zxc.iconic.xenon.NekoConfig.advancedGlassBlur))
+                    : (float) dp(8));
+        }
+
+        // 5. Create the drawable and enable AGSL liquid glass effect.
+        glassDrawable = glassSource.createDrawable();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                && glassDrawable instanceof BlurredBackgroundDrawableRenderNode) {
+            ((BlurredBackgroundDrawableRenderNode) glassDrawable).setLiquidGlassEffectAllowed();
+        }
+
+        // 6. Apply color provider (uses key_dialogBackground tinted by accent).
+        glassDrawable.setColorProvider(
+                BlurredBackgroundProviderImpl.bottomSheet(resourcesProvider));
+
+        // 7. Set corner radii: rounded at the top, square at the bottom (matches the sheet shape).
+        final float r = (float) dp(12);
+        glassDrawable.setRadius(r, r, 0f, 0f);
+
+        // 8. Inset the glass visual area to match the sheet body (shadow padding region).
+        glassDrawable.setPadding(backgroundPaddingLeft);
+
+        // 9. Replace shadowDrawable as containerView background.
+        containerView.setBackgroundDrawable(glassDrawable);
+
+        glassApplied = true;
+    }
+    protected void onContainerViewTranslation() {
+        // One-time glass setup on the first animation frame.
+        if (!glassApplied) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                setupGlassBackground();
+            }
+        }
+        // Update the glass source offset to track containerView position during animation/drag.
+        if (glassApplied && glassDrawable != null && glassHostView != null && containerView != null) {
+            final int[] hostLoc = new int[2];
+            final int[] viewLoc = new int[2];
+            glassHostView.getLocationOnScreen(hostLoc);
+            containerView.getLocationOnScreen(viewLoc);
+            glassDrawable.setSourceOffset(viewLoc[0] - hostLoc[0], viewLoc[1] - hostLoc[1]);
+            glassDrawable.invalidateSelf();
+        }
     }
 
     @Override
@@ -2137,6 +2462,21 @@ public class BottomSheet extends Dialog implements BaseFragment.AttachedSheet {
     }
 
     public void dismissInternal() {
+        if (blurRefreshCallback != null) {
+            Choreographer.getInstance().removeFrameCallback(blurRefreshCallback);
+            blurRefreshCallback = null;
+        }
+        if (blurOverlayView != null) {
+            blurOverlayView.animate().cancel();
+            if (container != null) {
+                container.removeView(blurOverlayView);
+            }
+        }
+        if (blurOverlayBitmap != null) {
+            blurOverlayBitmap.recycle();
+            blurOverlayBitmap = null;
+        }
+        blurOverlayView = null;
         if (attachedFragment != null) {
             attachedFragment.removeSheet(this);
             AndroidUtilities.removeFromParent(container);

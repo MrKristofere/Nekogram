@@ -1,0 +1,1126 @@
+package zxc.iconic.xenon.proxy;
+
+import android.content.Context;
+import android.net.ConnectivityManager;
+import android.os.Build;
+import android.provider.Settings;
+import android.system.OsConstants;
+import android.text.TextUtils;
+import android.util.Base64;
+
+import androidx.annotation.RequiresApi;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+import org.telegram.messenger.AndroidUtilities;
+import org.telegram.messenger.ApplicationLoader;
+import org.telegram.messenger.FileLog;
+
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.Locale;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import go.Seq;
+import libv2ray.CoreCallbackHandler;
+import libv2ray.CoreController;
+import libv2ray.Libv2ray;
+import libv2ray.ProcessFinder;
+
+/**
+ * Canonical Xray core engine for app-only proxy mode.
+ *
+ * Lifecycle is aligned with v2rayNG patterns:
+ * 1) Seq context initialization
+ * 2) Libv2ray environment initialization
+ * 3) single CoreController instance with callback-driven state updates
+ */
+final class XrayCoreEngine {
+
+    private static final String TAG = "XrayCoreEngine";
+    private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor();
+    private static final AtomicBoolean STARTING_OR_STOPPING = new AtomicBoolean(false);
+    private static final Object CORE_LOCK = new Object();
+    private static final Object LOG_LOCK = new Object();
+    private static final int MAX_RECENT_LOG_LINES = 200;
+    private static final String DEFAULT_DELAY_TEST_URL = "https://www.gstatic.com/generate_204";
+    /**
+     * Fallback delay URLs tried in order when the primary URL fails. Mirrors v2rayNG's behaviour
+     * where {@code measureV2rayDelay} retries against an alternate endpoint before reporting failure.
+     */
+    private static final String[] FALLBACK_DELAY_TEST_URLS = {
+            "https://www.google.com/generate_204",
+            "https://cp.cloudflare.com/generate_204",
+            "https://connectivitycheck.gstatic.com/generate_204",
+    };
+    private static final int PORT_CONFLICT_MAX_RETRIES = 5;
+    private static final int PORT_RANGE_START = 10808;
+    private static final int PORT_RANGE_END = 65535;
+
+    /** Commonly used ports that should be avoided when auto-selecting a SOCKS port. */
+    private static final Set<Integer> RESERVED_PORTS = new HashSet<>();
+    static {
+        // System/well-known
+        for (int p = 1; p <= 1023; p++) RESERVED_PORTS.add(p);
+        // Popular services
+        int[] common = {
+                1080, 1081, 1082,    // SOCKS defaults
+                3128, 3129,          // Squid proxy
+                5353,                // mDNS
+                8080, 8081, 8443,    // HTTP alt / HTTPS alt
+                8888, 8889,          // Common proxy ports
+                9050, 9051, 9150,    // Tor
+                10809, 10810,        // v2rayNG HTTP port range
+                1080, 2080, 2082, 2083, 2086, 2087, 2095, 2096, // Cloudflare
+                3306, 5432, 6379,    // MySQL, Postgres, Redis
+                5228, 5229, 5230,    // GCM/FCM
+                27017,               // MongoDB
+        };
+        for (int p : common) RESERVED_PORTS.add(p);
+    }
+    private static final SimpleDateFormat LOG_TIME_FORMAT = new SimpleDateFormat("HH:mm:ss", Locale.US);
+    private static final ArrayList<String> RECENT_LOGS = new ArrayList<>();
+    private static final CoreCallbackHandler CORE_CALLBACK = new CoreCallback();
+    private static final List<XrayAppProxyManager.StateListener> STATE_LISTENERS = new CopyOnWriteArrayList<>();
+
+    private static volatile boolean coreEnvInitialized;
+    private static volatile CoreController coreController;
+    private static volatile boolean running;
+    private static volatile String currentConfigJson;
+    private static volatile Method startLoopMethod;
+    private static volatile boolean unsupportedAbiLogged;
+    private static volatile ProcessFinder processFinder;
+
+    private XrayCoreEngine() {
+    }
+
+    /**
+     * Registers a listener for asynchronous state transitions. Idempotent.
+     */
+    static void addStateListener(XrayAppProxyManager.StateListener listener) {
+        if (listener == null || STATE_LISTENERS.contains(listener)) {
+            return;
+        }
+        STATE_LISTENERS.add(listener);
+    }
+
+    /**
+     * Removes a previously registered state listener.
+     */
+    static void removeStateListener(XrayAppProxyManager.StateListener listener) {
+        if (listener == null) {
+            return;
+        }
+        STATE_LISTENERS.remove(listener);
+    }
+
+    /**
+     * Checks whether libv2ray Java bindings are present in classpath.
+     */
+    static boolean isLibraryAvailable() {
+        if (!isCpuAbiSupported()) {
+            if (!unsupportedAbiLogged) {
+                unsupportedAbiLogged = true;
+                addLog("xray disabled on unsupported ABI: " + getPrimaryAbi());
+            }
+            return false;
+        }
+        try {
+            Class.forName("go.Seq");
+            Class.forName("libv2ray.Libv2ray");
+            return true;
+        } catch (Throwable ignore) {
+            return false;
+        }
+    }
+
+    /**
+     * Starts embedded Xray core with runtime config and verifies local SOCKS endpoint availability.
+     * Edge cases: empty config, malformed JSON, duplicate start requests, stale state after failures.
+     */
+    static void start(String configJson, XrayAppProxyManager.StartCallback callback) {
+        addLog("start requested");
+        if (!isLibraryAvailable()) {
+            addLog("start rejected: unsupported ABI or missing library");
+            notifyStart(callback, false, "AndroidLibXrayLite is unavailable on this CPU ABI");
+            return;
+        }
+        if (TextUtils.isEmpty(configJson)) {
+            addLog("start rejected: empty config");
+            notifyStart(callback, false, "Empty config");
+            return;
+        }
+
+        String configShapeError = validateConfigShape(configJson);
+        if (configShapeError != null) {
+            addLog("start rejected: " + configShapeError);
+            notifyStart(callback, false, configShapeError);
+            return;
+        }
+
+        if (!STARTING_OR_STOPPING.compareAndSet(false, true)) {
+            addLog("start rejected: busy");
+            notifyStart(callback, false, "Busy");
+            return;
+        }
+
+        EXECUTOR.execute(() -> {
+            try {
+                ensureCoreInitialized();
+                CoreController controller = coreController;
+                if (controller == null) {
+                    throw new Exception("Core controller is not initialized");
+                }
+
+                if (isControllerRunning(controller)) {
+                    addLog("start restarting running core");
+                    controller.stopLoop();
+                    running = false;
+                    currentConfigJson = null;
+                }
+
+                String activeConfig = configJson;
+                startCoreLoop(controller, activeConfig);
+                if (!isControllerRunning(controller)) {
+                    throw new Exception("Core did not switch to running state");
+                }
+
+                // Port conflict recovery: if SOCKS probe fails due to port conflict,
+                // auto-select a free port, regenerate credentials, re-patch config, and retry.
+                boolean socksOk = false;
+                int retriesLeft = PORT_CONFLICT_MAX_RETRIES;
+                while (!socksOk) {
+                    try {
+                        verifyLocalSocksReachable(activeConfig);
+                        socksOk = true;
+                    } catch (Throwable probeErr) {
+                        int boundPort = extractSocksPort(activeConfig);
+                        boolean portConflict = boundPort > 0 && !isPortAvailable(boundPort);
+                        if (!portConflict || retriesLeft <= 0) {
+                            throw probeErr;
+                        }
+                        retriesLeft--;
+                        int newPort = findAvailablePort(boundPort);
+                        addLog("port conflict on " + boundPort + ", rebinding to " + newPort);
+
+                        controller.stopLoop();
+                        running = false;
+                        currentConfigJson = null;
+
+                        XrayLocalSocksAuth.Credentials newCreds = XrayLocalSocksAuth.resetCredentials();
+                        activeConfig = rebindConfigToPort(configJson, newPort);
+                        activeConfig = XrayLocalSocksAuth.applyCredentials(activeConfig, newPort, newCreds);
+
+                        startCoreLoop(controller, activeConfig);
+                        if (!isControllerRunning(controller)) {
+                            throw new Exception("Core did not switch to running state after port rebind");
+                        }
+                    }
+                }
+
+                running = true;
+                currentConfigJson = activeConfig;
+                addLog("start success");
+                notifyStateChanged(true, "engine_start");
+                notifyStart(callback, true, "Started");
+
+                // Persist new port in active profile if it changed
+                int finalPort = extractSocksPort(activeConfig);
+                int originalPort = extractSocksPort(configJson);
+                if (finalPort > 0 && finalPort != originalPort) {
+                    addLog("port rebind persisted: " + originalPort + " -> " + finalPort);
+                    updateActiveProfilePort(finalPort);
+                }
+            } catch (Throwable t) {
+                running = false;
+                currentConfigJson = null;
+                tryStopCoreAfterFailedStart();
+                String error = extractErrorMessage(t, "Start failed");
+                addLog("start failed: " + error);
+                FileLog.e(TAG + ": start failed", t);
+                notifyStateChanged(false, "engine_start_failed");
+                notifyStart(callback, false, error);
+            } finally {
+                STARTING_OR_STOPPING.set(false);
+            }
+        });
+    }
+
+    /**
+     * Stops embedded Xray core if running.
+     */
+    static void stop(XrayAppProxyManager.StopCallback callback) {
+        addLog("stop requested");
+        if (!STARTING_OR_STOPPING.compareAndSet(false, true)) {
+            addLog("stop rejected: busy");
+            notifyStop(callback, false, "Busy");
+            return;
+        }
+
+        EXECUTOR.execute(() -> {
+            try {
+                CoreController controller = coreController;
+                if (controller == null || !isControllerRunning(controller)) {
+                    running = false;
+                    currentConfigJson = null;
+                    addLog("stop skipped: already stopped");
+                    notifyStop(callback, true, "Already stopped");
+                    return;
+                }
+
+                controller.stopLoop();
+                running = false;
+                currentConfigJson = null;
+                addLog("stop success");
+                notifyStateChanged(false, "engine_stop");
+                notifyStop(callback, true, "Stopped");
+            } catch (Throwable t) {
+                String error = extractErrorMessage(t, "Stop failed");
+                addLog("stop failed: " + error);
+                FileLog.e(TAG + ": stop failed", t);
+                notifyStop(callback, false, error);
+            } finally {
+                STARTING_OR_STOPPING.set(false);
+            }
+        });
+    }
+
+    /**
+     * Returns effective running state based on controller state and callback signals.
+     */
+    static boolean isRunning() {
+        CoreController controller = coreController;
+        if (controller != null) {
+            try {
+                running = controller.getIsRunning();
+            } catch (Throwable t) {
+                FileLog.e(TAG + ": failed to query running state", t);
+            }
+        }
+        return running;
+    }
+
+    /**
+     * Measures delay for provided outbound config using Libv2ray stateless API.
+     * If the primary URL fails (returns &lt; 0 or throws), retries against {@link #FALLBACK_DELAY_TEST_URLS}
+     * — mirroring v2rayNG's {@code measureV2rayDelay} which retries against an alternate endpoint
+     * before reporting failure.
+     */
+    static void measureDelay(String configJson, String testUrl, XrayAppProxyManager.DelayCallback callback) {
+        addLog("delay check requested");
+        if (!isLibraryAvailable()) {
+            addLog("delay check rejected: unsupported ABI or missing library");
+            notifyDelay(callback, false, -1, "AndroidLibXrayLite is unavailable on this CPU ABI");
+            return;
+        }
+        if (TextUtils.isEmpty(configJson)) {
+            addLog("delay check rejected: empty config");
+            notifyDelay(callback, false, -1, "Config is empty");
+            return;
+        }
+
+        final ArrayList<String> urlChain = buildDelayUrlChain(testUrl);
+
+        EXECUTOR.execute(() -> {
+            try {
+                ensureCoreEnvInitialized();
+                CoreController controller = coreController;
+                boolean reuseRunningController = controller != null
+                        && isControllerRunning(controller)
+                        && TextUtils.equals(configJson, currentConfigJson);
+                String delayConfig = reuseRunningController ? null : buildDelayCheckConfig(configJson);
+
+                long delay = -1L;
+                String lastError = "";
+                String lastUrl = urlChain.get(0);
+                for (String url : urlChain) {
+                    lastUrl = url;
+                    try {
+                        delay = reuseRunningController
+                                ? controller.measureDelay(url)
+                                : Libv2ray.measureOutboundDelay(delayConfig, url);
+                    } catch (Throwable t) {
+                        lastError = extractErrorMessage(t, "Delay check failed");
+                        FileLog.e(TAG + ": delay check failed against " + url, t);
+                        delay = -1L;
+                    }
+                    if (delay >= 0) {
+                        break;
+                    }
+                }
+
+                if (delay < 0) {
+                    String reason = TextUtils.isEmpty(lastError)
+                            ? "Delay check failed"
+                            : lastError;
+                    addLog("delay check failed: " + reason);
+                    notifyDelay(callback, false, -1, reason);
+                    return;
+                }
+
+                addLog("delay check success: " + delay + "ms via " + lastUrl);
+                notifyDelay(callback, true, delay, "OK");
+            } catch (Throwable t) {
+                String error = extractErrorMessage(t, "Delay check failed");
+                addLog("delay check error: " + error);
+                FileLog.e(TAG + ": delay check failed", t);
+                notifyDelay(callback, false, -1, error);
+            }
+        });
+    }
+
+    /**
+     * Queries traffic statistics for the given outbound tag. Returns 0 when the core is not running
+     * or libv2ray is unavailable. Mirrors v2rayNG's {@code V2RayServiceManager.queryStats}.
+     *
+     * @param tag  outbound tag (e.g. {@code "proxy"})
+     * @param link stat name (e.g. {@code "uplink"} or {@code "downlink"})
+     * @return cumulative byte counter or 0 when unavailable
+     */
+    static long queryStats(String tag, String link) {
+        if (!isLibraryAvailable()) {
+            return 0L;
+        }
+        CoreController controller = coreController;
+        if (controller == null || !isControllerRunning(controller)) {
+            return 0L;
+        }
+        try {
+            return controller.queryStats(safe(tag), safe(link));
+        } catch (Throwable t) {
+            FileLog.e(TAG + ": queryStats failed for tag=" + tag + " link=" + link, t);
+            return 0L;
+        }
+    }
+
+    /**
+     * Stops then starts the core with a fresh config. Mirrors v2rayNG's {@code MSG_STATE_RESTART}
+     * which performs stop + 500 ms gap + start. The internal stop+start are serialized through
+     * the same single-threaded executor as {@link #start} and {@link #stop}.
+     */
+    static void restart(String configJson, XrayAppProxyManager.StartCallback callback) {
+        addLog("restart requested");
+        stop((stopOk, stopMsg) -> {
+            // brief gap allows the OS to release listening sockets before re-bind, matching v2rayNG behaviour
+            try {
+                Thread.sleep(500L);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            }
+            start(configJson, (startOk, startMsg) -> {
+                if (callback == null) {
+                    return;
+                }
+                if (startOk) {
+                    callback.onComplete(true, startMsg);
+                } else {
+                    String combined = TextUtils.isEmpty(stopMsg) || stopOk
+                            ? startMsg
+                            : (stopMsg + "; " + startMsg);
+                    callback.onComplete(false, combined);
+                }
+            });
+        });
+    }
+
+    private static ArrayList<String> buildDelayUrlChain(String requestedUrl) {
+        ArrayList<String> chain = new ArrayList<>();
+        String trimmed = requestedUrl == null ? "" : requestedUrl.trim();
+        String primary = TextUtils.isEmpty(trimmed) ? DEFAULT_DELAY_TEST_URL : trimmed;
+        chain.add(primary);
+        for (String fallback : FALLBACK_DELAY_TEST_URLS) {
+            if (!TextUtils.isEmpty(fallback) && !chain.contains(fallback)) {
+                chain.add(fallback);
+            }
+        }
+        return chain;
+    }
+
+    private static String safe(String value) {
+        return value == null ? "" : value;
+    }
+
+    static ArrayList<String> getRecentLogs() {
+        synchronized (LOG_LOCK) {
+            return new ArrayList<>(RECENT_LOGS);
+        }
+    }
+
+    static void clearRecentLogs() {
+        synchronized (LOG_LOCK) {
+            RECENT_LOGS.clear();
+        }
+        addLog("logs cleared");
+    }
+
+    private static void ensureCoreInitialized() throws Exception {
+        if (coreController != null) {
+            return;
+        }
+
+        synchronized (CORE_LOCK) {
+            if (coreController != null) {
+                return;
+            }
+            ensureCoreEnvInitialized();
+            coreController = Libv2ray.newCoreController(CORE_CALLBACK);
+            registerProcessFinderIfNeeded(coreController);
+            addLog("core controller created");
+        }
+    }
+
+    /**
+     * Registers an Xray {@link ProcessFinder} on Android Q+ so that the core can resolve UID
+     * ownership of outbound connections. Mirrors v2rayNG's {@code V2RayServiceManager.serviceControl}
+     * setter which performs the same registration. No-op below Q (kernel API unavailable) and on
+     * already-registered controllers.
+     */
+    private static void registerProcessFinderIfNeeded(CoreController controller) {
+        if (controller == null) {
+            return;
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            return;
+        }
+        if (processFinder != null) {
+            return;
+        }
+
+        Context context = ApplicationLoader.applicationContext;
+        if (context == null) {
+            return;
+        }
+
+        try {
+            processFinder = new XenonProcessFinder(context.getApplicationContext());
+            controller.registerProcessFinder(processFinder);
+            addLog("process finder registered");
+        } catch (Throwable t) {
+            FileLog.e(TAG + ": failed to register process finder", t);
+            processFinder = null;
+        }
+    }
+
+    private static void ensureCoreEnvInitialized() throws Exception {
+        if (!isCpuAbiSupported()) {
+            throw new Exception("Unsupported CPU ABI: " + getPrimaryAbi());
+        }
+        if (coreEnvInitialized) {
+            return;
+        }
+
+        synchronized (CORE_LOCK) {
+            if (coreEnvInitialized) {
+                return;
+            }
+
+            Context context = ApplicationLoader.applicationContext;
+            if (context == null) {
+                throw new Exception("Application context is not initialized");
+            }
+
+            Context appContext = context.getApplicationContext();
+            Seq.setContext(appContext);
+            String envPath = appContext.getFilesDir().getAbsolutePath();
+            Libv2ray.initCoreEnv(envPath, getXudpBaseKey(appContext));
+            coreEnvInitialized = true;
+
+            addLog("core env initialized: " + envPath);
+            addLog("lib version: " + safeCoreVersion());
+        }
+    }
+
+    /**
+     * Generates device-unique XUDP base key from ANDROID_ID.
+     * Matches v2rayNG's Utils.getDeviceIdForXUDPBaseKey() implementation.
+     */
+    private static String getXudpBaseKey(Context context) {
+        try {
+            String deviceId = Settings.Secure.getString(context.getContentResolver(), Settings.Secure.ANDROID_ID);
+            if (TextUtils.isEmpty(deviceId)) {
+                deviceId = "fallback";
+            }
+            byte[] androidId = deviceId.getBytes("UTF-8");
+            byte[] padded = new byte[32];
+            System.arraycopy(androidId, 0, padded, 0, Math.min(androidId.length, 32));
+            return Base64.encodeToString(padded, Base64.URL_SAFE | Base64.NO_PADDING | Base64.NO_WRAP);
+        } catch (Throwable t) {
+            FileLog.e(TAG + ": failed to generate XUDP base key", t);
+            return "";
+        }
+    }
+
+    private static String safeCoreVersion() {
+        try {
+            return Libv2ray.checkVersionX();
+        } catch (Throwable t) {
+            return "unknown";
+        }
+    }
+
+    private static boolean isControllerRunning(CoreController controller) {
+        if (controller == null) {
+            return false;
+        }
+        try {
+            return controller.getIsRunning();
+        } catch (Throwable t) {
+            return running;
+        }
+    }
+
+    private static void startCoreLoop(CoreController controller, String configJson) throws Exception {
+        Method method = resolveStartLoopMethod(controller);
+        try {
+            if (method.getParameterTypes().length == 2) {
+                method.invoke(controller, configJson, 0);
+            } else {
+                method.invoke(controller, configJson);
+            }
+        } catch (InvocationTargetException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof Exception) {
+                throw (Exception) cause;
+            }
+            throw new Exception(extractErrorMessage(cause, "startLoop failed"), cause);
+        }
+    }
+
+    private static Method resolveStartLoopMethod(CoreController controller) throws Exception {
+        Method cached = startLoopMethod;
+        if (cached != null) {
+            return cached;
+        }
+
+        synchronized (CORE_LOCK) {
+            if (startLoopMethod != null) {
+                return startLoopMethod;
+            }
+
+            Method method;
+            try {
+                method = controller.getClass().getMethod("startLoop", String.class, int.class);
+            } catch (NoSuchMethodException ignored) {
+                method = controller.getClass().getMethod("startLoop", String.class);
+            }
+            method.setAccessible(true);
+            startLoopMethod = method;
+            addLog("startLoop signature resolved: " + method.toGenericString());
+            return method;
+        }
+    }
+
+    private static void tryStopCoreAfterFailedStart() {
+        CoreController controller = coreController;
+        if (controller == null) {
+            return;
+        }
+        try {
+            controller.stopLoop();
+        } catch (Throwable ignore) {
+        }
+        currentConfigJson = null;
+    }
+
+    private static String buildDelayCheckConfig(String configJson) throws Exception {
+        JSONObject root = new JSONObject(configJson);
+        root.remove("inbounds");
+        return root.toString();
+    }
+
+    /**
+     * Checks whether a TCP port is available for binding on localhost.
+     */
+    private static boolean isPortAvailable(int port) {
+        try (ServerSocket ss = new ServerSocket()) {
+            ss.setReuseAddress(false);
+            ss.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), port));
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * Scans for an available port starting after excludePort, skipping reserved/common ports.
+     * Range: PORT_RANGE_START..PORT_RANGE_END, wrapping around once.
+     */
+    private static int findAvailablePort(int excludePort) throws Exception {
+        int start = Math.max(PORT_RANGE_START, excludePort + 1);
+        for (int port = start; port <= PORT_RANGE_END; port++) {
+            if (!RESERVED_PORTS.contains(port) && isPortAvailable(port)) {
+                return port;
+            }
+        }
+        for (int port = PORT_RANGE_START; port < start && port <= PORT_RANGE_END; port++) {
+            if (!RESERVED_PORTS.contains(port) && port != excludePort && isPortAvailable(port)) {
+                return port;
+            }
+        }
+        throw new Exception("No available port found in range " + PORT_RANGE_START + ".." + PORT_RANGE_END);
+    }
+
+    /**
+     * Extracts the SOCKS inbound port from runtime config JSON.
+     */
+    private static int extractSocksPort(String configJson) {
+        try {
+            JSONObject root = new JSONObject(configJson);
+            JSONArray inbounds = root.optJSONArray("inbounds");
+            if (inbounds == null) return -1;
+            for (int i = 0; i < inbounds.length(); i++) {
+                JSONObject inbound = inbounds.optJSONObject(i);
+                if (inbound != null && "socks".equalsIgnoreCase(inbound.optString("protocol", ""))) {
+                    return parseIntFlexible(inbound.opt("port"), -1);
+                }
+            }
+        } catch (Throwable ignore) {
+        }
+        return -1;
+    }
+
+    /**
+     * Replaces SOCKS inbound port in config JSON with a new port value.
+     */
+    private static String rebindConfigToPort(String configJson, int newPort) throws Exception {
+        JSONObject root = new JSONObject(configJson);
+        JSONArray inbounds = root.optJSONArray("inbounds");
+        if (inbounds != null) {
+            for (int i = 0; i < inbounds.length(); i++) {
+                JSONObject inbound = inbounds.optJSONObject(i);
+                if (inbound != null && "socks".equalsIgnoreCase(inbound.optString("protocol", ""))) {
+                    inbound.put("port", newPort);
+                    break;
+                }
+            }
+        }
+        return root.toString();
+    }
+
+    /**
+     * Persists the new port back into the active profile store.
+     */
+    private static void updateActiveProfilePort(int newPort) {
+        try {
+            XrayProxyProfileStore.Profile active = XrayProxyProfileStore.getActiveProfile();
+            if (active != null) {
+                active.localPort = newPort;
+                XrayProxyProfileStore.updateProfile(active);
+            }
+        } catch (Throwable t) {
+            FileLog.e(TAG + ": failed to persist port rebind", t);
+        }
+    }
+
+    private static void verifyLocalSocksReachable(String configJson) throws Exception {
+        LocalSocksEndpoint endpoint = extractLocalSocksEndpoint(configJson);
+        if (endpoint == null || endpoint.port <= 0) {
+            return;
+        }
+
+        long deadline = System.currentTimeMillis() + 4500L;
+        Throwable lastError = null;
+        while (System.currentTimeMillis() < deadline) {
+            try (Socket socket = new Socket()) {
+                socket.connect(new InetSocketAddress("127.0.0.1", endpoint.port), 450);
+                socket.setSoTimeout(800);
+
+                if (TextUtils.isEmpty(endpoint.username) || TextUtils.isEmpty(endpoint.password)) {
+                    return;
+                }
+
+                if (performSocks5Auth(socket, endpoint.username, endpoint.password)) {
+                    return;
+                }
+
+                lastError = new Exception("SOCKS auth rejected by local inbound");
+            } catch (Throwable t) {
+                lastError = t;
+            }
+
+            try {
+                Thread.sleep(120L);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                throw new Exception("Interrupted while waiting local SOCKS startup", ie);
+            }
+        }
+
+        String reason = extractErrorMessage(lastError, "unknown");
+        throw new Exception("Local SOCKS inbound is not reachable on 127.0.0.1:" + endpoint.port + " (" + reason + ")");
+    }
+
+    private static LocalSocksEndpoint extractLocalSocksEndpoint(String configJson) {
+        try {
+            JSONObject root = new JSONObject(configJson);
+            JSONArray inbounds = root.optJSONArray("inbounds");
+            if (inbounds == null || inbounds.length() == 0) {
+                return null;
+            }
+
+            JSONObject preferred = null;
+            for (int i = 0; i < inbounds.length(); i++) {
+                JSONObject inbound = inbounds.optJSONObject(i);
+                if (inbound == null || !"socks".equalsIgnoreCase(inbound.optString("protocol", ""))) {
+                    continue;
+                }
+                String listen = inbound.optString("listen", "");
+                if (TextUtils.isEmpty(listen) || "127.0.0.1".equals(listen) || "localhost".equalsIgnoreCase(listen)) {
+                    preferred = inbound;
+                    break;
+                }
+                if (preferred == null) {
+                    preferred = inbound;
+                }
+            }
+
+            if (preferred == null) {
+                return null;
+            }
+
+            int port = parseIntFlexible(preferred.opt("port"), -1);
+            if (port <= 0) {
+                return null;
+            }
+
+            JSONObject settings = preferred.optJSONObject("settings");
+            if (settings == null) {
+                return new LocalSocksEndpoint(port, "", "");
+            }
+
+            JSONArray accounts = settings.optJSONArray("accounts");
+            if (accounts == null || accounts.length() == 0) {
+                return new LocalSocksEndpoint(port, "", "");
+            }
+
+            JSONObject account = accounts.optJSONObject(0);
+            if (account == null) {
+                return new LocalSocksEndpoint(port, "", "");
+            }
+
+            String username = account.optString("user", "");
+            String password = account.optString("pass", "");
+            return new LocalSocksEndpoint(port, username, password);
+        } catch (Throwable ignore) {
+            return null;
+        }
+    }
+
+    private static boolean performSocks5Auth(Socket socket, String username, String password) throws Exception {
+        byte[] userBytes = username.getBytes("UTF-8");
+        byte[] passBytes = password.getBytes("UTF-8");
+        if (userBytes.length == 0 || userBytes.length > 255 || passBytes.length == 0 || passBytes.length > 255) {
+            return false;
+        }
+
+        OutputStream out = socket.getOutputStream();
+        InputStream in = socket.getInputStream();
+
+        out.write(new byte[]{0x05, 0x01, 0x02});
+        out.flush();
+
+        byte[] methodSelect = readExact(in, 2);
+        if (methodSelect[0] != 0x05 || methodSelect[1] != 0x02) {
+            return false;
+        }
+
+        byte[] auth = new byte[3 + userBytes.length + passBytes.length];
+        auth[0] = 0x01;
+        auth[1] = (byte) userBytes.length;
+        System.arraycopy(userBytes, 0, auth, 2, userBytes.length);
+        auth[2 + userBytes.length] = (byte) passBytes.length;
+        System.arraycopy(passBytes, 0, auth, 3 + userBytes.length, passBytes.length);
+
+        out.write(auth);
+        out.flush();
+
+        byte[] authResponse = readExact(in, 2);
+        return authResponse[0] == 0x01 && authResponse[1] == 0x00;
+    }
+
+    private static byte[] readExact(InputStream in, int size) throws Exception {
+        byte[] data = new byte[size];
+        int offset = 0;
+        while (offset < size) {
+            int count = in.read(data, offset, size - offset);
+            if (count < 0) {
+                throw new Exception("Unexpected EOF while reading local SOCKS response");
+            }
+            offset += count;
+        }
+        return data;
+    }
+
+    private static int parseIntFlexible(Object value, int fallback) {
+        if (value instanceof Number) {
+            return ((Number) value).intValue();
+        }
+        if (value instanceof String) {
+            try {
+                return Integer.parseInt(((String) value).trim());
+            } catch (Throwable ignore) {
+                return fallback;
+            }
+        }
+        return fallback;
+    }
+
+    private static boolean isCpuAbiSupported() {
+        String primaryAbi = getPrimaryAbi();
+        if (TextUtils.isEmpty(primaryAbi) || "unknown".equals(primaryAbi)) {
+            return false;
+        }
+        String abi = primaryAbi.toLowerCase(Locale.US);
+        if (abi.startsWith("x86") || abi.startsWith("riscv") || abi.startsWith("mips")) {
+            return false;
+        }
+        return abi.startsWith("arm64") || abi.startsWith("armeabi");
+    }
+
+    private static String getPrimaryAbi() {
+        String[] abis = Build.SUPPORTED_ABIS;
+        if (abis == null || abis.length == 0 || TextUtils.isEmpty(abis[0])) {
+            return "unknown";
+        }
+        return abis[0];
+    }
+
+    private static String extractErrorMessage(Throwable error, String fallback) {
+        if (error == null) {
+            return fallback;
+        }
+
+        Throwable cursor = error;
+        while (cursor.getCause() != null && cursor.getCause() != cursor) {
+            cursor = cursor.getCause();
+        }
+
+        String message = cursor.getMessage();
+        if (!TextUtils.isEmpty(message)) {
+            return message;
+        }
+
+        message = error.getMessage();
+        if (!TextUtils.isEmpty(message)) {
+            return message;
+        }
+
+        return fallback;
+    }
+
+    private static void notifyStart(XrayAppProxyManager.StartCallback callback, boolean success, String message) {
+        if (callback != null) {
+            callback.onComplete(success, message);
+        }
+    }
+
+    private static void notifyStop(XrayAppProxyManager.StopCallback callback, boolean success, String message) {
+        if (callback != null) {
+            callback.onComplete(success, message);
+        }
+    }
+
+    private static void notifyDelay(XrayAppProxyManager.DelayCallback callback, boolean success, long delayMs, String message) {
+        if (callback != null) {
+            callback.onComplete(success, delayMs, message);
+        }
+    }
+
+    private static void addLog(String text) {
+        String line;
+        synchronized (LOG_TIME_FORMAT) {
+            line = LOG_TIME_FORMAT.format(new Date()) + "  " + text;
+        }
+        synchronized (LOG_LOCK) {
+            RECENT_LOGS.add(line);
+            if (RECENT_LOGS.size() > MAX_RECENT_LOG_LINES) {
+                RECENT_LOGS.remove(0);
+            }
+        }
+        FileLog.d(TAG + " log: " + text);
+    }
+
+    private static String validateConfigShape(String configJson) {
+        try {
+            JSONObject root = new JSONObject(configJson);
+            JSONArray inbounds = root.optJSONArray("inbounds");
+            if (inbounds == null || inbounds.length() == 0) {
+                return "Config must contain inbounds";
+            }
+
+            JSONArray outbounds = root.optJSONArray("outbounds");
+            if (outbounds == null || outbounds.length() == 0) {
+                return "Config must contain outbounds";
+            }
+            return null;
+        } catch (Throwable t) {
+            return "Invalid JSON config";
+        }
+    }
+
+    private static void updateRunningStateFromStatus(String status) {
+        if (TextUtils.isEmpty(status)) {
+            return;
+        }
+
+        String lower = status.toLowerCase(Locale.US);
+        if (lower.contains("stopped") || lower.contains("shutdown") || lower.contains("failed") || lower.contains("error")) {
+            running = false;
+            currentConfigJson = null;
+            return;
+        }
+        if (lower.contains("running") || lower.contains("started")) {
+            running = true;
+        }
+    }
+
+    private static final class CoreCallback implements CoreCallbackHandler {
+        @Override
+        public long startup() {
+            running = true;
+            addLog("callback: startup");
+            notifyStateChanged(true, "callback_startup");
+            return 0L;
+        }
+
+        @Override
+        public long shutdown() {
+            boolean wasRunning = running;
+            running = false;
+            currentConfigJson = null;
+            addLog("callback: shutdown");
+            // Mirrors v2rayNG's CoreCallback.shutdown() which calls serviceControl.stopService().
+            // Xenon has no foreground service; the equivalent teardown is releasing the Telegram
+            // proxy bridge so the UI does not stay pointed at a dead loopback port. Always run on
+            // the UI thread because the bridge touches NotificationCenter / ConnectionsManager.
+            try {
+                AndroidUtilities.runOnUIThread(() -> {
+                    try {
+                        XrayTelegramProxyBridge.disableLocalProxyIfOwned();
+                    } catch (Throwable t) {
+                        FileLog.e(TAG + ": failed to release Telegram bridge after callback shutdown", t);
+                    }
+                });
+            } catch (Throwable t) {
+                FileLog.e(TAG + ": failed to dispatch bridge release", t);
+            }
+            if (wasRunning) {
+                notifyStateChanged(false, "callback_shutdown");
+            }
+            return 0L;
+        }
+
+        @Override
+        public long onEmitStatus(long code, String status) {
+            if (!TextUtils.isEmpty(status)) {
+                addLog("status[" + code + "]: " + status);
+                boolean wasRunning = running;
+                updateRunningStateFromStatus(status);
+                if (wasRunning != running) {
+                    notifyStateChanged(running, "status_emit:" + code);
+                }
+            }
+            return 0L;
+        }
+    }
+
+    /**
+     * Dispatches a state change to listeners on the UI thread. Listener exceptions are isolated so
+     * one bad listener cannot suppress notifications for the rest.
+     */
+    private static void notifyStateChanged(boolean newRunning, String reason) {
+        if (STATE_LISTENERS.isEmpty()) {
+            return;
+        }
+        Runnable dispatch = () -> {
+            for (XrayAppProxyManager.StateListener listener : STATE_LISTENERS) {
+                try {
+                    listener.onStateChanged(newRunning, reason);
+                } catch (Throwable t) {
+                    FileLog.e(TAG + ": state listener threw for reason=" + reason, t);
+                }
+            }
+        };
+        try {
+            AndroidUtilities.runOnUIThread(dispatch);
+        } catch (Throwable t) {
+            // AndroidUtilities may not be ready in unit tests / very early app boot — fall back to inline dispatch.
+            dispatch.run();
+        }
+    }
+
+    private static final class LocalSocksEndpoint {
+        final int port;
+        final String username;
+        final String password;
+
+        LocalSocksEndpoint(int port, String username, String password) {
+            this.port = port;
+            this.username = username;
+            this.password = password;
+        }
+    }
+
+    /**
+     * Resolves the owning UID of an outbound TCP/UDP connection on Android Q+ via
+     * {@link ConnectivityManager#getConnectionOwnerUid}. Mirrors v2rayNG's
+     * {@code XrayProcessFinder} so the bundled libv2ray can perform UID-based routing.
+     * Returns {@code -1} on any error or when the API is unavailable.
+     */
+    @RequiresApi(Build.VERSION_CODES.Q)
+    private static final class XenonProcessFinder implements ProcessFinder {
+        private final ConnectivityManager connectivityManager;
+
+        XenonProcessFinder(Context context) {
+            this.connectivityManager = context == null
+                    ? null
+                    : (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+        }
+
+        @Override
+        public long findProcessByConnection(String network, String srcIP, long srcPort, String destIP, long destPort) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                return -1L;
+            }
+            if (connectivityManager == null) {
+                return -1L;
+            }
+            int proto;
+            if ("tcp".equalsIgnoreCase(network)) {
+                proto = OsConstants.IPPROTO_TCP;
+            } else if ("udp".equalsIgnoreCase(network)) {
+                proto = OsConstants.IPPROTO_UDP;
+            } else {
+                return -1L;
+            }
+            if (TextUtils.isEmpty(destIP) || destPort == 0L) {
+                return -1L;
+            }
+            try {
+                int uid = connectivityManager.getConnectionOwnerUid(
+                        proto,
+                        new InetSocketAddress(srcIP, (int) srcPort),
+                        new InetSocketAddress(destIP, (int) destPort)
+                );
+                return (long) uid;
+            } catch (Throwable t) {
+                return -1L;
+            }
+        }
+    }
+}

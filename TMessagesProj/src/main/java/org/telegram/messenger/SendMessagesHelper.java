@@ -123,7 +123,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
-import tw.nekomimi.nekogram.NekoConfig;
+import zxc.iconic.xenon.NekoConfig;
 
 public class SendMessagesHelper extends BaseController implements NotificationCenter.NotificationCenterDelegate {
 
@@ -4106,6 +4106,33 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         }
         if (message == null && caption == null && inputRichMessage == null) {
             caption = "";
+        }
+
+        // --- Plugin hook: onSendMessage -----------------------------------
+        // Lets plugins rewrite the outgoing text/peer or cancel the send.
+        // Handler receives {message=string, peer=number} and may return:
+        //   { cancel = true }              -> abort the send
+        //   { message = "...", peer = N }  -> override message and/or peer
+        //   nil                            -> leave unchanged
+        if (message != null && NekoConfig.pluginsEnabled) {
+            org.luaj.vm2.LuaValue ctx = org.luaj.vm2.LuaValue.tableOf(new org.luaj.vm2.LuaValue[]{
+                    org.luaj.vm2.LuaValue.valueOf("message"), org.luaj.vm2.LuaValue.valueOf(message),
+                    org.luaj.vm2.LuaValue.valueOf("peer"), org.luaj.vm2.LuaValue.valueOf(peer)
+            });
+            org.luaj.vm2.LuaValue res = zxc.iconic.xenon.plugins.PluginManager.getInstance().fireReturn("onSendMessage", ctx);
+            if (res != null && res.istable()) {
+                if (res.get("cancel").toboolean()) {
+                    return;
+                }
+                if (!res.get("message").isnil()) {
+                    message = res.get("message").checkjstring();
+                    sendMessageParams.message = message;
+                }
+                if (!res.get("peer").isnil()) {
+                    peer = res.get("peer").tolong();
+                    sendMessageParams.peer = peer;
+                }
+            }
         }
 
         long _payStars = getMessagesController().getSendPaidMessagesStars(peer);

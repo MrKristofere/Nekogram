@@ -132,8 +132,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
-import tw.nekomimi.nekogram.NekoConfig;
 import me.vkryl.core.BitwiseUtils;
+import zxc.iconic.xenon.NekoConfig;
 
 public class MessagesController extends BaseController implements NotificationCenter.NotificationCenterDelegate {
 
@@ -1392,6 +1392,12 @@ public class MessagesController extends BaseController implements NotificationCe
                 return 0;
             }
         }
+        if (NekoConfig.keepUnreadChatsOnTop) {
+            boolean unread1 = hasImportantUnread(dialog1);
+            boolean unread2 = hasImportantUnread(dialog2);
+            if (unread1 && !unread2) return -1;
+            if (!unread1 && unread2) return 1;
+        }
         MediaDataController mediaDataController = getMediaDataController();
         long date1 = DialogObject.getLastMessageOrDraftDate(dialog1, mediaDataController.getDraft(dialog1.id, 0));
         long date2 = DialogObject.getLastMessageOrDraftDate(dialog2, mediaDataController.getDraft(dialog2.id, 0));
@@ -1428,6 +1434,12 @@ public class MessagesController extends BaseController implements NotificationCe
                 return 0;
             }
         }
+        if (NekoConfig.keepUnreadChatsOnTop) {
+            boolean unread1 = hasImportantUnread(dialog1);
+            boolean unread2 = hasImportantUnread(dialog2);
+            if (unread1 && !unread2) return -1;
+            if (!unread1 && unread2) return 1;
+        }
         MediaDataController mediaDataController = getMediaDataController();
         long date1 = DialogObject.getLastMessageOrDraftDate(dialog1, mediaDataController.getDraft(dialog1.id, 0));
         long date2 = DialogObject.getLastMessageOrDraftDate(dialog2, mediaDataController.getDraft(dialog2.id, 0));
@@ -1438,6 +1450,14 @@ public class MessagesController extends BaseController implements NotificationCe
         }
         return 0;
     };
+
+    private boolean hasImportantUnread(TLRPC.Dialog dialog) {
+        if (dialog == null) return false;
+        if (dialog.unread_mentions_count > 0) return true;
+        if (dialog.unread_mark) return true;
+        if (getDialogUnreadCount(dialog) > 0 && !isDialogMuted(dialog.id, 0)) return true;
+        return false;
+    }
 
     private Comparator<TLRPC.Update> updatesComparator = (lhs, rhs) -> {
         int ltype = getUpdateType(lhs);
@@ -9277,6 +9297,43 @@ public class MessagesController extends BaseController implements NotificationCe
         if ((messages == null || messages.isEmpty()) && taskId == 0) {
             return;
         }
+        int ayuDeletedMessagesCount = 0;
+        if (!scheduled && !quickReplies && NekoConfig.enableSaveDeletedMessages && messages != null && !messages.isEmpty()) {
+            var ayuCtrl = zxc.iconic.xenon.deleted.XenonDeletedMessagesController.getInstance();
+            if (DialogObject.isEncryptedDialog(dialogId) || taskId != 0 || cacheOnly) {
+                final ArrayList<Integer> messagesCopy = new ArrayList<>(messages);
+                final long dialogIdFinal = dialogId;
+                getMessagesStorage().getStorageQueue().postRunnable(() -> {
+                    var invalidate = new ArrayList<Integer>();
+                    for (int a = 0; a < messagesCopy.size(); a++) {
+                        int msgId = messagesCopy.get(a);
+                        if (zxc.iconic.xenon.deleted.XenonDeletedState.isDeletePermitted(dialogIdFinal, msgId)) {
+                            continue;
+                        }
+                        MessageObject obj = dialogMessagesByIds.get(msgId);
+                        if (obj != null && obj.messageOwner != null) {
+                            invalidate.add(msgId);
+                            ayuCtrl.onMessageDeleted(obj.messageOwner, dialogIdFinal, currentAccount);
+                        }
+                    }
+                    AndroidUtilities.runOnUIThread(() -> {
+                        getNotificationCenter().postNotificationName(NotificationCenter.messagesDeletedNotification, dialogIdFinal, invalidate);
+                    });
+                });
+            } else {
+                ArrayList<Integer> permittedForAyuDeletion = new ArrayList<>();
+                for (var msgId : messages) {
+                    if (zxc.iconic.xenon.deleted.XenonDeletedState.isDeletePermitted(dialogId, msgId)) {
+                        permittedForAyuDeletion.add(msgId);
+                    }
+                }
+                var existingMessageIds = ayuCtrl.getExistingMessageIds(dialogId, permittedForAyuDeletion, currentAccount);
+                if (!existingMessageIds.isEmpty()) {
+                    Utilities.globalQueue.postRunnable(() -> ayuCtrl.deleteMessages(dialogId, existingMessageIds, currentAccount));
+                    ayuDeletedMessagesCount = existingMessageIds.size();
+                }
+            }
+        }
         ArrayList<Integer> toSend = null;
         long channelId;
         if (taskId == 0) {
@@ -9326,6 +9383,10 @@ public class MessagesController extends BaseController implements NotificationCe
             }
         }
         if (cacheOnly) {
+            return;
+        }
+
+        if (messages != null && messages.size() == ayuDeletedMessagesCount) {
             return;
         }
 
@@ -11108,6 +11169,9 @@ public class MessagesController extends BaseController implements NotificationCe
     }
 
     public boolean sendTyping(long dialogId, long threadMsgId, int action, String emojicon, int classGuid) {
+        if (NekoConfig.disableTypingIndicator) {
+            return false;
+        }
         if (action < 0 || action >= sendingTypings.length || dialogId == 0) {
             return false;
         }
@@ -13611,6 +13675,9 @@ public class MessagesController extends BaseController implements NotificationCe
             if (filterDialogsChanged) {
                 sortDialogs(null);
                 getNotificationCenter().postNotificationName(NotificationCenter.dialogsNeedReload);
+            } else if (NekoConfig.keepUnreadChatsOnTop || NekoConfig.keepUnreadArchivedOnTop) {
+                sortDialogs(null);
+                getNotificationCenter().postNotificationName(NotificationCenter.dialogsNeedReload);
             }
             getNotificationCenter().postNotificationName(NotificationCenter.updateInterfaces, UPDATE_MASK_READ_DIALOG_MESSAGE);
             if (dialogsToUpdate != null) {
@@ -14086,6 +14153,9 @@ public class MessagesController extends BaseController implements NotificationCe
         long dialogId = messageObject.getDialogId();
         getMessagesStorage().markMessagesContentAsRead(dialogId, arrayList, 0, 0);
         getNotificationCenter().postNotificationName(NotificationCenter.messagesReadContent, dialogId, arrayList);
+        if (NekoConfig.ghostModeEnabled && !DialogObject.isEncryptedDialog(dialogId)) {
+            return;
+        }
         if (messageObject.getId() < 0) {
             markMessageAsRead(messageObject.getDialogId(), messageObject.messageOwner.random_id, Integer.MIN_VALUE);
         } else {
@@ -14114,6 +14184,9 @@ public class MessagesController extends BaseController implements NotificationCe
 
     public void markMentionMessageAsRead(int mid, long channelId, long did) {
         getMessagesStorage().markMentionMessageAsRead(-channelId, mid, did);
+        if (NekoConfig.ghostModeEnabled && !DialogObject.isEncryptedDialog(did)) {
+            return;
+        }
         if (channelId != 0) {
             TLRPC.TL_channels_readMessageContents req = new TLRPC.TL_channels_readMessageContents();
             req.channel = getInputChannel(channelId);
@@ -14238,6 +14311,9 @@ public class MessagesController extends BaseController implements NotificationCe
     }
 
     private void completeReadTask(ReadTask task) {
+        if (NekoConfig.ghostModeEnabled) {
+            return;
+        }
         if (task.replyId != 0 && task.monoForumPeerId == 0) {
             TLRPC.TL_messages_readDiscussion req = new TLRPC.TL_messages_readDiscussion();
             req.msg_id = (int) task.replyId;
@@ -14400,6 +14476,9 @@ public class MessagesController extends BaseController implements NotificationCe
                                     break;
                                 }
                             }
+                        } else if ((NekoConfig.keepUnreadChatsOnTop || NekoConfig.keepUnreadArchivedOnTop) && prevCount != dialog.unread_count) {
+                            sortDialogs(null);
+                            getNotificationCenter().postNotificationName(NotificationCenter.dialogsNeedReload);
                         }
                         getNotificationCenter().postNotificationName(NotificationCenter.updateInterfaces, UPDATE_MASK_READ_DIALOG_MESSAGE);
                     }
@@ -14454,6 +14533,9 @@ public class MessagesController extends BaseController implements NotificationCe
                                     break;
                                 }
                             }
+                        } else if ((NekoConfig.keepUnreadChatsOnTop || NekoConfig.keepUnreadArchivedOnTop) && prevCount != dialog.unread_count) {
+                            sortDialogs(null);
+                            getNotificationCenter().postNotificationName(NotificationCenter.dialogsNeedReload);
                         }
                         getNotificationCenter().postNotificationName(NotificationCenter.updateInterfaces, UPDATE_MASK_READ_DIALOG_MESSAGE);
                     }
@@ -17928,6 +18010,29 @@ public class MessagesController extends BaseController implements NotificationCe
                 if (message instanceof TLRPC.TL_messageEmpty) {
                     continue;
                 }
+                if (NekoConfig.pluginsEnabled) {
+                    final long fPeerUserId = message.peer_id.user_id;
+                    final long fPeerChannelId = message.peer_id.channel_id;
+                    final long fPeerChatId = message.peer_id.chat_id;
+                    final int fMsgId = message.id;
+                    final String fText = message.message;
+                    final int fReplyTo = message.reply_to != null ? message.reply_to.reply_to_msg_id : 0;
+                    final boolean fOut = message.out;
+                    org.telegram.messenger.AndroidUtilities.runOnUIThread(() -> {
+                        long dialogId = 0;
+                        if (fPeerUserId != 0) dialogId = fPeerUserId;
+                        else if (fPeerChannelId != 0) dialogId = -fPeerChannelId;
+                        else if (fPeerChatId != 0) dialogId = -fPeerChatId;
+                        org.luaj.vm2.LuaValue ctx = org.luaj.vm2.LuaValue.tableOf(new org.luaj.vm2.LuaValue[]{
+                                org.luaj.vm2.LuaValue.valueOf("chatId"), org.luaj.vm2.LuaValue.valueOf(dialogId),
+                                org.luaj.vm2.LuaValue.valueOf("msgId"), org.luaj.vm2.LuaValue.valueOf(fMsgId),
+                                org.luaj.vm2.LuaValue.valueOf("text"), fText != null ? org.luaj.vm2.LuaValue.valueOf(fText) : org.luaj.vm2.LuaValue.NIL,
+                                org.luaj.vm2.LuaValue.valueOf("reply_to_msg_id"), org.luaj.vm2.LuaValue.valueOf(fReplyTo),
+                                org.luaj.vm2.LuaValue.valueOf("out"), org.luaj.vm2.LuaValue.valueOf(fOut)
+                        });
+                        zxc.iconic.xenon.plugins.PluginManager.getInstance().fire("onNewMessage", ctx);
+                    });
+                }
                 if (newMessageCallback != null && newMessageCallback.onMessageReceived(message)) {
                     newMessageCallback = null;
                 }
@@ -20492,10 +20597,39 @@ public class MessagesController extends BaseController implements NotificationCe
             for (int a = 0, size = deletedMessages.size(); a < size; a++) {
                 long key = deletedMessages.keyAt(a);
                 ArrayList<Integer> arrayList = deletedMessages.valueAt(a);
-                getMessagesStorage().getStorageQueue().postRunnable(() -> {
-                    ArrayList<Long> dialogIds = getMessagesStorage().markMessagesAsDeleted(key, arrayList, false, true, 0, 0);
-                    getMessagesStorage().updateDialogsWithDeletedMessages(key, -key, arrayList, dialogIds);
-                });
+                if (NekoConfig.enableSaveDeletedMessages && arrayList != null) {
+                    var ctrl = zxc.iconic.xenon.deleted.XenonDeletedMessagesController.getInstance();
+                    var savedIds = new ArrayList<Integer>();
+                    for (int b = 0; b < arrayList.size(); b++) {
+                        int msgId = arrayList.get(b);
+                        if (zxc.iconic.xenon.deleted.XenonDeletedState.isDeletePermitted(key, msgId)) {
+                            continue;
+                        }
+                        MessageObject obj = dialogMessagesByIds.get(msgId);
+                        if (obj != null && obj.messageOwner != null) {
+                            ctrl.onMessageDeleted(obj.messageOwner, key, currentAccount);
+                            savedIds.add(msgId);
+                        }
+                    }
+                    if (!savedIds.isEmpty()) {
+                        for (int savedMsgId : savedIds) {
+                            MessageObject savedObj = dialogMessagesByIds.get(savedMsgId);
+                            if (savedObj != null) {
+                                savedObj.messageOwner.ayuDeleted = true;
+                            }
+                        }
+                        arrayList.removeAll(savedIds);
+                        AndroidUtilities.runOnUIThread(() -> {
+                            getNotificationCenter().postNotificationName(NotificationCenter.messagesDeletedNotification, key, savedIds);
+                        });
+                    }
+                }
+                if (arrayList != null && !arrayList.isEmpty()) {
+                    getMessagesStorage().getStorageQueue().postRunnable(() -> {
+                        ArrayList<Long> dialogIds = getMessagesStorage().markMessagesAsDeleted(key, arrayList, false, true, 0, 0);
+                        getMessagesStorage().updateDialogsWithDeletedMessages(key, -key, arrayList, dialogIds);
+                    });
+                }
             }
         }
         if (deletedQuickReplyMessages != null) {
@@ -21621,6 +21755,12 @@ public class MessagesController extends BaseController implements NotificationCe
                 dialogsForward.add(0, dialog);
             }
         }
+        if (NekoConfig.keepUnreadArchivedOnTop) {
+            ArrayList<TLRPC.Dialog> mainDialogs = dialogsByFolder.get(0);
+            if (mainDialogs != null) {
+                mainDialogs.removeIf(d -> d.folder_id == 1 && !hasImportantUnread(d));
+            }
+        }
         for (int a = 0; a < dialogsByFolder.size(); a++) {
             int folderId = dialogsByFolder.keyAt(a);
             ArrayList<TLRPC.Dialog> dialogs = dialogsByFolder.valueAt(a);
@@ -21653,6 +21793,16 @@ public class MessagesController extends BaseController implements NotificationCe
             }
         } else {
             dialogs.add(index, dialog);
+        }
+        if (NekoConfig.keepUnreadArchivedOnTop && folderId == 1 && hasImportantUnread(dialog)) {
+            ArrayList<TLRPC.Dialog> mainDialogs = dialogsByFolder.get(0);
+            if (mainDialogs == null) {
+                mainDialogs = new ArrayList<>();
+                dialogsByFolder.put(0, mainDialogs);
+            }
+            if (!mainDialogs.contains(dialog)) {
+                mainDialogs.add(dialog);
+            }
         }
     }
 

@@ -214,11 +214,12 @@ import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.atomic.AtomicReference;
 
-import tw.nekomimi.nekogram.BackButtonMenuRecent;
-import tw.nekomimi.nekogram.EditTextAutoFill;
-import tw.nekomimi.nekogram.QrView;
-import tw.nekomimi.nekogram.helpers.PasscodeHelper;
-import tw.nekomimi.nekogram.helpers.PopupHelper;
+import zxc.iconic.xenon.BackButtonMenuRecent;
+import zxc.iconic.xenon.EditTextAutoFill;
+import zxc.iconic.xenon.QrView;
+import zxc.iconic.xenon.helpers.PasscodeHelper;
+import zxc.iconic.xenon.helpers.PopupHelper;
+import zxc.iconic.xenon.proxy.XrayLoginProxyBottomSheet;
 
 @SuppressLint("HardwareIds")
 public class LoginActivity extends BaseFragment implements NotificationCenter.NotificationCenterDelegate {
@@ -761,11 +762,16 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
         moreButtonView.setIcon(R.drawable.ic_ab_other);
         moreButtonView.addSubItem(0, R.drawable.outline_shield_plain_24, getString(R.string.ProxySettings));
         moreButtonView.addSubItem(1, R.drawable.msg_qrcode, getString(R.string.QRLoginTitle));
+        moreButtonView.addSubItem(2, R.drawable.msg_link, getString(R.string.XrayProxyLoginQuickTitle));
         moreButtonView.setDelegate(id -> {
             if (id == 0) {
                 presentFragment(new ProxyListActivity());
             } else if (id == 1) {
                 setPage(VIEW_QR_LOGIN, true, null, false);
+            } else if (id == 2) {
+                if (getParentActivity() != null) {
+                    showDialog(new XrayLoginProxyBottomSheet(getParentActivity(), resourceProvider));
+                }
             }
         });
         moreButtonView.setSubMenuOpenSide(1);

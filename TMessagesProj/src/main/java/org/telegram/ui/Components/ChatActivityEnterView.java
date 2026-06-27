@@ -217,8 +217,8 @@ import java.util.Locale;
 
 import me.vkryl.android.animator.BoolAnimator;
 import me.vkryl.android.animator.FactorAnimator;
-import tw.nekomimi.nekogram.NekoConfig;
-import tw.nekomimi.nekogram.helpers.ImeHelper;
+import zxc.iconic.xenon.NekoConfig;
+import zxc.iconic.xenon.helpers.ImeHelper;
 
 public class ChatActivityEnterView extends FrameLayout implements
     NotificationCenter.NotificationCenterDelegate,
@@ -4724,7 +4724,10 @@ public class ChatActivityEnterView extends FrameLayout implements
             return false;
         }
 
-        if (isStories || (messageEditText == null || TextUtils.isEmpty(messageEditText.getText())) && parentFragment != null && parentFragment.messagePreviewParams != null && parentFragment.messagePreviewParams.forwardMessages != null && parentFragment.messagePreviewParams.forwardMessages.messages != null && !parentFragment.messagePreviewParams.forwardMessages.messages.isEmpty()) {
+        boolean hasText = messageEditText != null && messageEditText.getText().length() > 0;
+
+        if ((isStories || (messageEditText == null || TextUtils.isEmpty(messageEditText.getText())) && parentFragment != null && parentFragment.messagePreviewParams != null && parentFragment.messagePreviewParams.forwardMessages != null && parentFragment.messagePreviewParams.forwardMessages.messages != null && !parentFragment.messagePreviewParams.forwardMessages.messages.isEmpty())
+                || hasText) {
 
             boolean self = parentFragment != null && UserObject.isUserSelf(parentFragment.getCurrentUser());
 
@@ -5248,7 +5251,7 @@ public class ChatActivityEnterView extends FrameLayout implements
     private ArrayList<TextWatcher> messageEditTextWatchers;
     private boolean messageEditTextEnabled = true;
 
-    private class ChatActivityEditTextCaption extends EditTextCaption {
+    private class ChatActivityEditTextCaption extends TextAnimationEditText {
         public ChatActivityEditTextCaption(Context context, Theme.ResourcesProvider resourcesProvider) {
             super(context, resourcesProvider);
         }
@@ -8513,6 +8516,24 @@ public class ChatActivityEnterView extends FrameLayout implements
                 }
             }
         }
+        if (NekoConfig.hideRecordButton && message.length() == 0 && delegate != null && audioVideoButtonContainer != null && audioVideoButtonContainer.getVisibility() == VISIBLE) {
+            if (runningAnimation != null) {
+                runningAnimation.cancel();
+                runningAnimation = null;
+                runningAnimationType = 0;
+            }
+            audioVideoButtonContainer.setVisibility(GONE);
+            View sendBtn = getSendButtonInternal();
+            if (sendBtn != null) {
+                sendBtn.setVisibility(VISIBLE);
+                sendBtn.setAlpha(1.0f);
+                sendBtn.setScaleX(1.0f);
+                sendBtn.setScaleY(1.0f);
+            }
+            if (slowModeButton != null) {
+                slowModeButton.setVisibility(GONE);
+            }
+        }
         if (isStories && suggestButton != null) {
             if (animated) {
                 suggestButton.animate().translationX(shownSendButton ? -Math.max(0, sendButton.width() - dp(64)) : dp(42)).setDuration(320).setInterpolator(CubicBezierInterpolator.EASE_OUT_QUINT).start();
@@ -9951,9 +9972,9 @@ public class ChatActivityEnterView extends FrameLayout implements
             }
             draftMessage = null;
             messageWebPageSearch = draftSearchWebpage;
-            if (getVisibility() == VISIBLE) {
-                delegate.onAttachButtonShow();
-            }
+                if (getVisibility() == VISIBLE && delegate != null) {
+                    delegate.onAttachButtonShow();
+                }
             updateFieldRight(1);
         }
         updateFieldHint(true);
@@ -14977,4 +14998,5 @@ public class ChatActivityEnterView extends FrameLayout implements
         updateFieldRight(lastAttachVisible);
         checkSendButton(false);
     }
+
 }

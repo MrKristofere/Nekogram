@@ -1,10 +1,72 @@
 import org.gradle.internal.os.OperatingSystem
 import java.nio.file.Paths
+import java.util.zip.ZipFile
 
 plugins {
     id 'com.android.library'
     id 'org.lsposed.lsparanoid'
 }
+
+def libv2rayFile = file("$projectDir/libs/libv2ray.aar")
+def libv2rayUrl = "https://github.com/2dust/AndroidLibXrayLite/releases/latest/download/libv2ray.aar"
+
+def isValidAar = { File target ->
+    if (!target.exists() || target.length() <= 0) {
+        return false
+    }
+    try {
+        ZipFile zip = new ZipFile(target)
+        zip.close()
+        return true
+    } catch (Throwable ignore) {
+        return false
+    }
+}
+
+def ensureLibv2rayAar = {
+    if (isValidAar(libv2rayFile)) {
+        return
+    } else if (libv2rayFile.exists()) {
+        logger.lifecycle("Existing libv2ray.aar is invalid, re-downloading.")
+        libv2rayFile.delete()
+    }
+
+    if (gradle.startParameter.isOffline()) {
+        throw new GradleException("libv2ray.aar is missing and Gradle is in offline mode")
+    }
+
+    libv2rayFile.parentFile.mkdirs()
+    logger.lifecycle("Downloading libv2ray.aar from ${libv2rayUrl}")
+
+    HttpURLConnection connection = (HttpURLConnection) new URL(libv2rayUrl).openConnection()
+    connection.setInstanceFollowRedirects(true)
+    connection.setConnectTimeout(15000)
+    connection.setReadTimeout(120000)
+    connection.setRequestProperty("User-Agent", "Gradle/${gradle.gradleVersion}")
+    connection.connect()
+
+    int responseCode = connection.getResponseCode()
+    if (responseCode < 200 || responseCode >= 400) {
+        throw new GradleException("Failed to download libv2ray.aar (HTTP ${responseCode})")
+    }
+
+    libv2rayFile.withOutputStream { output ->
+        connection.inputStream.withStream { input ->
+            output << input
+        }
+    }
+
+    if (!libv2rayFile.exists() || libv2rayFile.length() == 0) {
+        throw new GradleException("Downloaded libv2ray.aar is empty")
+    }
+
+    if (!isValidAar(libv2rayFile)) {
+        libv2rayFile.delete()
+        throw new GradleException("Downloaded libv2ray.aar is invalid")
+    }
+}
+
+ensureLibv2rayAar()
 
 configurations.configureEach {
     exclude group: 'androidx.recyclerview', module: 'recyclerview'
@@ -13,6 +75,12 @@ configurations.configureEach {
 }
 
 dependencies {
+    implementation fileTree(dir: 'libs', include: ['*.aar'])
+
+    // luaj: pure-Java Lua interpreter for the plugin engine. ~200KB, no native
+    // code, runs scripts (plugins) loaded at runtime without recompilation.
+    implementation 'org.luaj:luaj-jse:3.0.1'
+
     implementation 'androidx.activity:activity:1.13.0'
     implementation 'androidx.fragment:fragment:1.8.9'
     implementation 'androidx.core:core:1.19.0'
@@ -86,7 +154,6 @@ dependencies {
     implementation 'org.apache.commons:commons-text:1.15.0'
 
     implementation 'com.google.firebase:firebase-analytics:23.2.0'
-    implementation 'io.sentry:sentry-android:8.43.2'
 }
 
 lsparanoid {
@@ -94,7 +161,38 @@ lsparanoid {
     variantFilter = { variant -> variant.buildType == "release" || variant.buildType == "play" }
 }
 
+// Resolve git commit hashes at the top level, OUTSIDE android {} block.
+// Priority: Gradle property (-PgitCommitHash=...) > local git > "unknown"
+def resolvedGitHash = project.findProperty('gitCommitHash') ?: {
+    try {
+        def process = ['git', 'rev-parse', 'HEAD'].execute(null, rootProject.rootDir)
+        def result = process.text.trim()
+        process.waitFor()
+        return result.isEmpty() ? "unknown" : result
+    } catch (ignored) {
+        return "unknown"
+    }
+}()
+
+def resolvedGitShort = project.findProperty('gitCommitShort') ?: {
+    try {
+        def process = ['git', 'rev-parse', '--short=7', 'HEAD'].execute(null, rootProject.rootDir)
+        def result = process.text.trim()
+        process.waitFor()
+        return result.isEmpty() ? "unknown" : result
+    } catch (ignored) {
+        return "unknown"
+    }
+}()
+
+logger.lifecycle("Git commit hash: ${resolvedGitHash}")
+logger.lifecycle("Git commit short: ${resolvedGitShort}")
+
 android {
+    buildFeatures {
+        buildConfig true
+    }
+
     sourceSets.main.jniLibs.srcDirs = ['./jni/']
 
     externalNativeBuild {
@@ -115,12 +213,11 @@ android {
             buildConfigField("long", "BUILD_VERSION", "${TG_APP_VERSION_CODE}")
             buildConfigField("String","BUILD_VERSION_STRING","\"${TG_APP_VERSION_NAME}\"")
             buildConfigField("boolean", "DEBUG_PRIVATE_VERSION", "false")
+            buildConfigField("String", "GIT_COMMIT_HASH", "\"${resolvedGitHash}\"")
+            buildConfigField("String", "GIT_COMMIT_SHORT", "\"${resolvedGitShort}\"")
 
             buildConfigField("int","API_ID", "${localProperties.get("apiId", 0)}")
             buildConfigField("String","API_HASH", "\"${localProperties.get("apiHash")}\"")
-            buildConfigField("String","SENTRY_DSN", "\"${localProperties.get("sentryDsn")}\"")
-            buildConfigField("long","HELPER_BOT_ID", "${localProperties.get("helperBotId", 0)}")
-            buildConfigField("String","HELPER_BOT_USERNAME", "\"${localProperties.get("helperBotUsername")}\"")
         }
 
         release {
@@ -129,12 +226,11 @@ android {
             buildConfigField("long", "BUILD_VERSION", "${TG_APP_VERSION_CODE}")
             buildConfigField("String","BUILD_VERSION_STRING","\"${TG_APP_VERSION_NAME}\"")
             buildConfigField("boolean", "DEBUG_PRIVATE_VERSION", "false")
+            buildConfigField("String", "GIT_COMMIT_HASH", "\"${resolvedGitHash}\"")
+            buildConfigField("String", "GIT_COMMIT_SHORT", "\"${resolvedGitShort}\"")
 
             buildConfigField("int","API_ID", "${localProperties.get("apiId", 0)}")
             buildConfigField("String","API_HASH", "\"${localProperties.get("apiHash")}\"")
-            buildConfigField("String","SENTRY_DSN", "\"${localProperties.get("sentryDsn")}\"")
-            buildConfigField("long","HELPER_BOT_ID", "${localProperties.get("helperBotId", 0)}")
-            buildConfigField("String","HELPER_BOT_USERNAME", "\"${localProperties.get("helperBotUsername")}\"")
         }
     }
     namespace 'org.telegram.messenger'
@@ -146,6 +242,9 @@ android {
     }
 
     defaultConfig {
+        ndk {
+            abiFilters "arm64-v8a"
+        }
         externalNativeBuild {
             cmake {
                 arguments '-DANDROID_STL=c++_static', '-DANDROID_PLATFORM=android-23', '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON'

@@ -73,7 +73,7 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 
-import tw.nekomimi.nekogram.NekoConfig;
+import zxc.iconic.xenon.NekoConfig;
 
 public class EditTextBoldCursor extends EditTextEffects {
 
@@ -515,6 +515,10 @@ public class EditTextBoldCursor extends EditTextEffects {
 
     public void setCursorWidth(float width) {
         cursorWidth = width;
+    }
+
+    public float getCursorWidth() {
+        return cursorWidth;
     }
 
     public void setCursorColor(int color) {

@@ -49,10 +49,15 @@ import java.io.File;
 import java.util.Locale;
 import java.util.concurrent.CountDownLatch;
 
-import tw.nekomimi.nekogram.FirebaseFix;
-import tw.nekomimi.nekogram.NekoConfig;
-import tw.nekomimi.nekogram.helpers.AnalyticsHelper;
-import tw.nekomimi.nekogram.helpers.ComponentsHelper;
+import zxc.iconic.xenon.FirebaseFix;
+import zxc.iconic.xenon.NekoConfig;
+import zxc.iconic.xenon.helpers.AnalyticsHelper;
+import zxc.iconic.xenon.helpers.ComponentsHelper;
+import zxc.iconic.xenon.proxy.XrayAppProxyManager;
+import zxc.iconic.xenon.proxy.XrayConfigValidator;
+import zxc.iconic.xenon.proxy.XrayLocalSocksAuth;
+import zxc.iconic.xenon.proxy.XrayProxyProfileStore;
+import zxc.iconic.xenon.proxy.XrayTelegramProxyBridge;
 
 public class ApplicationLoader extends Application {
 
@@ -300,6 +305,14 @@ public class ApplicationLoader extends Application {
 
         super.onCreate();
 
+        // Install plugin Safe Mode crash handler as early as possible so it can
+        // capture crashes from any thread (including startup).
+        zxc.iconic.xenon.plugins.PluginSafeMode.install();
+        // Mark this launch as "in progress". If the process dies before the UI
+        // finishes coming up (crash, ANR, hang, killed), the flag stays set and
+        // the next launch detects the failed boot.
+        zxc.iconic.xenon.plugins.PluginSafeMode.markBootStarted();
+
         AnalyticsHelper.start(this);
         ComponentsHelper.fixComponents(this);
 
@@ -360,6 +373,44 @@ public class ApplicationLoader extends Application {
 
         LauncherIconController.tryFixLauncherIconIfNeeded();
         ProxyRotationController.init();
+        if (NekoConfig.xrayAppProxyEnabled) {
+            XrayProxyProfileStore.Profile activeProfile = XrayProxyProfileStore.getActiveProfile();
+            if (activeProfile == null) {
+                FileLog.e("Xray startup skipped: no active profile");
+                NekoConfig.setXrayAppProxyEnabled(false);
+                AndroidUtilities.runOnUIThread(() -> XrayTelegramProxyBridge.disableLocalProxyIfOwned());
+            } else {
+                XrayLocalSocksAuth.Credentials credentials = XrayLocalSocksAuth.getOrCreateCredentials();
+                String runtimeConfig;
+                try {
+                    runtimeConfig = XrayLocalSocksAuth.applyCredentials(activeProfile.configJson, activeProfile.localPort, credentials);
+                } catch (Throwable t) {
+                    FileLog.e("Xray startup skipped: failed to apply socks auth", t);
+                    NekoConfig.setXrayAppProxyEnabled(false);
+                    AndroidUtilities.runOnUIThread(() -> XrayTelegramProxyBridge.disableLocalProxyIfOwned());
+                    runtimeConfig = null;
+                }
+
+                if (runtimeConfig != null) {
+                    XrayConfigValidator.ValidationResult validationResult = XrayConfigValidator.validate(runtimeConfig, activeProfile.localPort);
+                    if (validationResult.valid) {
+                        XrayAppProxyManager.start(runtimeConfig, (success, message) -> {
+                            if (!success) {
+                                FileLog.e("Xray startup failed: " + message);
+                                NekoConfig.setXrayAppProxyEnabled(false);
+                                AndroidUtilities.runOnUIThread(() -> XrayTelegramProxyBridge.disableLocalProxyIfOwned());
+                                return;
+                            }
+                            AndroidUtilities.runOnUIThread(() -> XrayTelegramProxyBridge.enableLocalProxy(activeProfile.localPort, credentials));
+                        });
+                    } else {
+                        FileLog.e("Xray startup skipped: " + validationResult.message);
+                        NekoConfig.setXrayAppProxyEnabled(false);
+                        AndroidUtilities.runOnUIThread(() -> XrayTelegramProxyBridge.disableLocalProxyIfOwned());
+                    }
+                }
+            }
+        }
     }
 
     public static void startPushService() {
@@ -705,6 +756,8 @@ public class ApplicationLoader extends Application {
         return false;
     }
     public void downloadUpdate() {}
+    public void downloadUpdate(Runnable onComplete) {}
+    public void downloadUpdate(String apkUrl, Runnable onComplete) {}
     public void cancelDownloadingUpdate() {}
     public boolean isDownloadingUpdate() {
         return false;
@@ -718,5 +771,11 @@ public class ApplicationLoader extends Application {
     }
     public File getDownloadedUpdateFile() {
         return null;
+    }
+    public long getDownloadTotalSize() {
+        return 0;
+    }
+    public long getDownloadBytesDownloaded() {
+        return 0;
     }
 }

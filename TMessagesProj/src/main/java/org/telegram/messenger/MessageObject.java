@@ -124,11 +124,11 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import tw.nekomimi.nekogram.NekoConfig;
-import tw.nekomimi.nekogram.helpers.MessageFilterHelper;
-import tw.nekomimi.nekogram.helpers.MessageHelper;
-import tw.nekomimi.nekogram.syntaxhighlight.SyntaxHighlight;
-import tw.nekomimi.nekogram.translator.Translator;
+import zxc.iconic.xenon.NekoConfig;
+import zxc.iconic.xenon.helpers.MessageFilterHelper;
+import zxc.iconic.xenon.helpers.MessageHelper;
+import zxc.iconic.xenon.syntaxhighlight.SyntaxHighlight;
+import zxc.iconic.xenon.translator.Translator;
 
 import me.vkryl.core.BitwiseUtils;
 
@@ -9971,6 +9971,10 @@ public class MessageObject {
             return !NekoConfig.shouldNOTTrustMe && (getMedia(messageOwner) != null && getMedia(messageOwner).ttl_seconds != 0) && (getMedia(messageOwner) instanceof TLRPC.TL_messageMediaPhoto || getMedia(messageOwner) instanceof TLRPC.TL_messageMediaDocument);
         }
         return false;
+    }
+
+    public boolean isAyuDeleted() {
+        return messageOwner != null && messageOwner.ayuDeleted;
     }
 
     public static void setUnreadFlags(TLRPC.Message message, int flag) {

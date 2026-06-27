@@ -58,9 +58,9 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.regex.Matcher;
 
-import tw.nekomimi.nekogram.helpers.SettingsHelper;
-import tw.nekomimi.nekogram.helpers.UserHelper;
-import tw.nekomimi.nekogram.settings.NekoLanguagesSelectActivity;
+import zxc.iconic.xenon.helpers.SettingsHelper;
+import zxc.iconic.xenon.helpers.UserHelper;
+import zxc.iconic.xenon.settings.NekoLanguagesSelectActivity;
 
 public class LinkManager {
 

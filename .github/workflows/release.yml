@@ -24,22 +24,16 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: outputs
+          path: outputs
 
       - name: Display downloaded files
-        run: ls -R
+        run: ls -R outputs
 
       - name: Release
         uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
         with:
+          generate_release_notes: true
           files: |
-            apk/**/*.apk
-            bundle/**/*.aab
-
-      - name: Upload to Telegram
-        uses: nekogram/upload-with-mtcute@4ef471af101913322285bad4e391339428169291
-        with:
-          api-id: ${{ secrets.API_ID }}
-          api-hash: ${{ secrets.API_HASH }}
-          bot-token: ${{ secrets.RELEASE_BOT_TOKEN }}
-          chat-id: ${{ secrets.RELEASE_CHANNEL_ID }}
-          files: apk/**/*.apk
+            outputs/apk/**/*.apk
+            outputs/bundle/**/*.aab

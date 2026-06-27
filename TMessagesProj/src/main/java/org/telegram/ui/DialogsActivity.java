@@ -272,16 +272,16 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
-import tw.nekomimi.nekogram.BackButtonMenuRecent;
-import tw.nekomimi.nekogram.forward.ForwardContext;
-import tw.nekomimi.nekogram.NekoConfig;
-import tw.nekomimi.nekogram.forward.SendItemOptions;
-import tw.nekomimi.nekogram.helpers.PasscodeHelper;
+import zxc.iconic.xenon.BackButtonMenuRecent;
+import zxc.iconic.xenon.forward.ForwardContext;
+import zxc.iconic.xenon.NekoConfig;
+import zxc.iconic.xenon.forward.SendItemOptions;
+import zxc.iconic.xenon.helpers.PasscodeHelper;
 import me.vkryl.android.animator.BoolAnimator;
 import me.vkryl.android.animator.FactorAnimator;
-import tw.nekomimi.nekogram.helpers.PopupHelper;
-import tw.nekomimi.nekogram.helpers.TypefaceHelper;
-import tw.nekomimi.nekogram.helpers.remote.ConfigHelper;
+import zxc.iconic.xenon.helpers.PopupHelper;
+import zxc.iconic.xenon.helpers.TypefaceHelper;
+import zxc.iconic.xenon.helpers.remote.ConfigHelper;
 
 public class DialogsActivity extends BaseFragment implements NotificationCenter.NotificationCenterDelegate, FloatingDebugProvider, FactorAnimator.Target, MainTabsActivity.TabFragmentDelegate {
     private final int ADDITIONAL_LIST_HEIGHT_DP = Build.VERSION.SDK_INT >= 31 ? 48 : 0;
@@ -13534,6 +13534,24 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                 args.putLong("user_id", UserConfig.getInstance(currentAccount).getClientUserId());
                 presentFragment(new ChatActivity(args));
             });
+            Drawable ghostDrawable = activity.getResources().getDrawable(R.drawable.ghost).mutate();
+            ghostDrawable.setColorFilter(new PorterDuffColorFilter(0xffffffff, PorterDuff.Mode.SRC_IN));
+            ghostDrawable.setBounds(0, 0, AndroidUtilities.dp(24), AndroidUtilities.dp(24));
+            Bitmap ghostBitmap = Bitmap.createBitmap(AndroidUtilities.dp(24), AndroidUtilities.dp(24), Bitmap.Config.ARGB_8888);
+            Canvas ghostCanvas = new Canvas(ghostBitmap);
+            ghostDrawable.draw(ghostCanvas);
+            String ghostText = NekoConfig.ghostModeEnabled
+                    ? LocaleController.getString(R.string.DisableGhostMode)
+                    : LocaleController.getString(R.string.GhostMode);
+            ActionBarMenuSubItem ghostItem = new ActionBarMenuSubItem(activity, false, false, null);
+            ghostItem.setPadding(AndroidUtilities.dp(18), 0, AndroidUtilities.dp(18), 0);
+            ghostItem.setTextAndIcon(ghostText, 0, new BitmapDrawable(activity.getResources(), ghostBitmap));
+            ghostItem.setOnClickListener(v -> {
+                NekoConfig.toggleGhostMode();
+                showItemOptions();
+                io.dismiss();
+            });
+            io.add(ghostItem);
             if (ApplicationLoader.applicationLoaderInstance != null) {
                 ApplicationLoader.applicationLoaderInstance.addItemOptions(io);
             }

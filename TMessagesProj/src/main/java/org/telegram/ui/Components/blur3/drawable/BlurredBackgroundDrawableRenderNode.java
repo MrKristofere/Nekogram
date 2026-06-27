@@ -59,6 +59,15 @@ public class BlurredBackgroundDrawableRenderNode extends BlurredBackgroundDrawab
         liquidGlassEffect = new LiquidGlassEffect(renderNodeFill);
     }
 
+    @RequiresApi(api = Build.VERSION_CODES.TIRAMISU)
+    public void recreateLiquidGlassEffect() {
+        if (liquidGlassEffect != null) {
+            liquidGlassEffect = new LiquidGlassEffect(renderNodeFill);
+            renderNodeInvalidated = true;
+        }
+    }
+
+
 
     @Override
     public BlurredBackgroundSource getSource() {
@@ -116,14 +125,14 @@ public class BlurredBackgroundDrawableRenderNode extends BlurredBackgroundDrawab
             liquidGlassEffect.update(
                 0, 0, boundProps.boundsWithPadding.width(), boundProps.boundsWithPadding.height(),
                 boundProps.shaderRadii[0], boundProps.shaderRadii[2], boundProps.shaderRadii[4], boundProps.shaderRadii[6],
-                boundProps.liquidThickness <= 0 ? dp(11) : boundProps.liquidThickness,
-                boundProps.liquidIntensity,
+                boundProps.liquidThickness <= 0 ? dp(zxc.iconic.xenon.NekoConfig.liquidGlassThickness) : boundProps.liquidThickness,
+                boundProps.liquidIntensity <= 0 ? zxc.iconic.xenon.NekoConfig.liquidGlassIntensity : boundProps.liquidIntensity,
                 boundProps.liquidIndex,
                 backgroundColor
             );
         }
         source.draw(c, sL, sT, sR, sB);
-        c.save();
+        c.restore();
         renderNodeFill.endRecording();
 
 
@@ -132,9 +141,43 @@ public class BlurredBackgroundDrawableRenderNode extends BlurredBackgroundDrawab
             c.drawColor(backgroundColor);
         } else {
             c.drawRenderNode(renderNodeFill);
-            if (liquidGlassEffect == null && Color.alpha(backgroundColor) != 0) {
-                c.drawColor(backgroundColor);
+            // Three cases for the tint overlay layered on top of the
+            // (refracted/blurred) source:
+            //
+            //   - liquidGlassEffect == null: no shader is involved at all.
+            //     Preserve the legacy behaviour and overlay the precomputed
+            //     backgroundColor as-is.
+            //
+            //   - liquidGlassEffect + base shader: the base AGSL consumes
+            //     foreground_color_premultiplied and tints internally inside
+            //     the shader, so we MUST NOT overlay (would double-tint).
+            //
+            //   - liquidGlassEffect + advanced shader: the advanced AGSL has
+            //     no color uniform — it only does refraction + chromatic
+            //     dispersion. Without an external overlay the surface stays
+            //     untinted, so we draw a SOFT overlay scaled by the
+            //     advancedGlassTintPercent slider. At slider = 0 nothing is
+            //     drawn, which matches the appearance that existed before
+            //     the tint slider was introduced. At slider = 100 the
+            //     overlay alpha is halved relative to the precomputed
+            //     backgroundColor so the refraction stays clearly visible
+            //     and the look mirrors the subtle premultiplied tint of the
+            //     base shader rather than producing an aggressive flat wash.
+            if (liquidGlassEffect == null) {
+                if (Color.alpha(backgroundColor) != 0) {
+                    c.drawColor(backgroundColor);
+                }
+            } else if (zxc.iconic.xenon.NekoConfig.useAdvancedLiquidGlass) {
+                // tintPercent = tint/transparency control. advancedGlassAlpha controls
+                // overall glass node opacity via renderNode.setAlpha() in setAlpha().
+                final int percent = zxc.iconic.xenon.NekoConfig.advancedGlassTintPercent;
+                if (percent > 0 && Color.alpha(backgroundColor) != 0) {
+                    final float strength = Math.min(100, Math.max(0, percent)) / 100f * 0.60f;
+                    c.drawColor(Theme.multAlpha(backgroundColor, strength));
+                }
             }
+            // Base shader path (liquidGlassEffect != null && !advanced):
+            // shader applies the tint internally — no overlay needed.
         }
         if (strokeColorTop != 0) {
             drawStroke(c, 0, 0, boundProps.boundsWithPadding.width(),
@@ -147,6 +190,14 @@ public class BlurredBackgroundDrawableRenderNode extends BlurredBackgroundDrawab
                     boundProps.strokeWidthBottom, false, paintStrokeBottom);
         }
         renderNode.endRecording();
+
+        // Sync renderNode alpha every time the display list is rebuilt.
+        // This covers the case where advancedGlassAlpha or useAdvancedLiquidGlass
+        // changed without a subsequent setAlpha() call (parent alpha stayed at 255).
+        final float _glassAlphaFactor = zxc.iconic.xenon.NekoConfig.useAdvancedLiquidGlass
+                ? Math.max(0f, Math.min(1f, zxc.iconic.xenon.NekoConfig.advancedGlassAlpha / 100f))
+                : 1f;
+        renderNode.setAlpha(getAlpha() / 255f * _glassAlphaFactor);
     }
 
     @Override
@@ -188,6 +239,9 @@ public class BlurredBackgroundDrawableRenderNode extends BlurredBackgroundDrawab
         canvas.save();
         canvas.translate(boundProps.boundsWithPadding.left, boundProps.boundsWithPadding.top);
         canvas.drawRenderNode(renderNode);
+        if (liquidGlassEffect != null && Build.VERSION.SDK_INT >= 33) {
+            liquidGlassEffect.drawHighlight(canvas, renderNode.getAlpha());
+        }
         canvas.restore();
     }
 
@@ -200,7 +254,12 @@ public class BlurredBackgroundDrawableRenderNode extends BlurredBackgroundDrawab
         final int oldAlpha = getAlpha();
 
         super.setAlpha(alpha);
-        renderNode.setAlpha(alpha / 255f);
+        // In advanced glass mode, advancedGlassAlpha scales the drawable alpha
+        // so the entire glass surface (refraction + tint) can be made translucent.
+        final float glassAlphaFactor = zxc.iconic.xenon.NekoConfig.useAdvancedLiquidGlass
+                ? Math.max(0f, Math.min(1f, zxc.iconic.xenon.NekoConfig.advancedGlassAlpha / 100f))
+                : 1f;
+        renderNode.setAlpha(alpha / 255f * glassAlphaFactor);
         renderNodeInvalidated = true;
 
         if (oldAlpha == 0 && alpha > 0) {

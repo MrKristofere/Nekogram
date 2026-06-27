@@ -1,12 +1,15 @@
 package org.telegram.ui.Components.blur3;
 
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.BlendMode;
+import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.RectF;
 import android.graphics.RenderEffect;
 import android.graphics.RenderNode;
 import android.graphics.RuntimeShader;
-
 import androidx.annotation.RequiresApi;
-
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.R;
 
@@ -15,88 +18,146 @@ public class LiquidGlassEffect {
 
     private final RenderNode node;
     private final RuntimeShader shader;
-    private RenderEffect effect;
+
+    // Highlight (edge glare)
+    private RuntimeShader highlightShader;
+    private final Paint highlightPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Path highlightClipPath = new Path();
+    private final RectF highlightRect = new RectF();
+    private float[] highlightCornerRadii;
 
     public LiquidGlassEffect(RenderNode node) {
         this.node = node;
-        final String code = AndroidUtilities.readRes(R.raw.liquid_glass_shader);
+        boolean advanced = zxc.iconic.xenon.NekoConfig.useAdvancedLiquidGlass;
+        String code = advanced
+                ? AndroidUtilities.readRes(R.raw.liquid_glass_shader_advanced)
+                : AndroidUtilities.readRes(R.raw.liquid_glass_shader);
         shader = new RuntimeShader(code);
-        node.setRenderEffect(effect = RenderEffect.createRuntimeShaderEffect(shader, "img"));
+        node.setRenderEffect(RenderEffect.createRuntimeShaderEffect(shader, "img"));
+
+        if (advanced) {
+            String highlightCode = AndroidUtilities.readRes(R.raw.liquid_glass_highlight);
+            highlightShader = new RuntimeShader(highlightCode);
+            highlightPaint.setStyle(Paint.Style.STROKE);
+            highlightPaint.setStrokeWidth(AndroidUtilities.dp(0.35f) * 2f);
+            // Intentionally NOT using BlurMaskFilter on the stroke. A
+            // mask-filtered stroke with a RuntimeShader forces software
+            // rasterisation of the blurred mask every frame on every glass
+            // surface, which is what dropped frame rates from 120 Hz to
+            // 30–60 Hz once advanced glass was enabled (commit 918e5861b).
+            // The runtime shader's directional gradient already provides
+            // sufficient softness on its own; the dropped 0.5 dp Gaussian
+            // edge bleed is barely perceptible at this stroke width and alpha.
+            highlightPaint.setBlendMode(BlendMode.PLUS);
+            highlightPaint.setColor(Color.WHITE);
+            highlightPaint.setAlpha(42);
+        }
     }
 
     private float resolutionX, resolutionY;
     private float centerX, centerY;
     private float sizeX, sizeY;
-    private float radiusLeftTop;
-    private float radiusRightTop;
-    private float radiusRightBottom;
-    private float radiusLeftBottom;
-    private float thickness;
-    private float intensity;
-    private float index;
+    private float radiusLeftTop, radiusRightTop, radiusRightBottom, radiusLeftBottom;
+    private float thickness, intensity, index;
     private int foregroundColor;
 
     public void update(
-        float left, float top, float right, float bottom,
-        float radiusLeftTop, float radiusRightTop, float radiusRightBottom, float radiusLeftBottom,
-
-        float thickness,
-        float intensity,
-        float index,
-        int foregroundColor
+            float left, float top, float right, float bottom,
+            float rLT, float rRT, float rRB, float rLB,
+            float thickness, float intensity, float index, int foregroundColor
     ) {
-        float resolutionX = node.getWidth();
-        float resolutionY = node.getHeight();
-        float centerX = (left + right) / 2;
-        float centerY = (top + bottom) / 2;
-        float width = right - left, height = bottom - top;
-        float sizeX = width / 2;
-        float sizeY = height / 2;
+        float resX = node.getWidth();
+        float resY = node.getHeight();
+        float cX = (left + right) / 2f;
+        float cY = (top + bottom) / 2f;
+        float sX = (right - left) / 2f;
+        float sY = (bottom - top) / 2f;
 
-        if (radiusLeftTop + radiusLeftBottom > height) {
-            float a = radiusLeftTop / (radiusLeftTop + radiusLeftBottom);
-            radiusLeftTop = height * a;
-            radiusLeftBottom = height * (1.0f - a);
-        }
-        if (radiusRightTop + radiusRightBottom > height) {
-            float a = radiusRightTop / (radiusRightTop + radiusRightBottom);
-            radiusRightTop = height * a;
-            radiusRightBottom = height * (1.0f - a);
-        }
+        if (this.resolutionX != resX || this.resolutionY != resY ||
+                this.centerX != cX || this.centerY != cY ||
+                this.sizeX != sX || this.sizeY != sY ||
+                this.radiusLeftTop != rLT || this.radiusRightTop != rRT ||
+                this.radiusRightBottom != rRB || this.radiusLeftBottom != rLB ||
+                this.thickness != thickness || this.intensity != intensity || this.index != index ||
+                this.foregroundColor != foregroundColor) {
 
-        if (
-            Math.abs(this.resolutionX - resolutionX) > 0.1f ||
-            Math.abs(this.resolutionY - resolutionY) > 0.1f ||
-            Math.abs(this.centerX - centerX) > 0.1f ||
-            Math.abs(this.centerY - centerY) > 0.1f ||
-            Math.abs(this.sizeX - sizeX) > 0.1f ||
-            Math.abs(this.sizeY - sizeY) > 0.1f ||
-            Math.abs(this.radiusLeftTop - radiusLeftTop) > 0.1f ||
-            Math.abs(this.radiusRightTop - radiusRightTop) > 0.1f ||
-            Math.abs(this.radiusRightBottom - radiusRightBottom) > 0.1f ||
-            Math.abs(this.radiusLeftBottom - radiusLeftBottom) > 0.1f ||
-            Math.abs(this.thickness - thickness) > 0.1f ||
-            Math.abs(this.intensity - intensity) > 0.1f ||
-            Math.abs(this.index - index) > 0.1f ||
-            this.foregroundColor != foregroundColor
-        ) {
-            this.foregroundColor = foregroundColor;
+            this.resolutionX = resX; this.resolutionY = resY;
+            this.centerX = cX; this.centerY = cY;
+            this.sizeX = sX; this.sizeY = sY;
+            this.radiusLeftTop = rLT; this.radiusRightTop = rRT;
+            this.radiusRightBottom = rRB; this.radiusLeftBottom = rLB;
+            this.thickness = thickness; this.intensity = intensity;
+            this.index = index; this.foregroundColor = foregroundColor;
 
             final float a = Color.alpha(foregroundColor) / 255f;
             final float r = Color.red(foregroundColor) / 255f * a;
             final float g = Color.green(foregroundColor) / 255f * a;
             final float b = Color.blue(foregroundColor) / 255f * a;
 
-            shader.setFloatUniform("resolution", this.resolutionX = resolutionX, this.resolutionY = resolutionY);
-            shader.setFloatUniform("center", this.centerX = centerX, this.centerY = centerY);
-            shader.setFloatUniform("size", this.sizeX = sizeX, this.sizeY = sizeY);
-            shader.setFloatUniform("radius", this.radiusRightBottom = radiusRightBottom, this.radiusRightTop = radiusRightTop, this.radiusLeftBottom = radiusLeftBottom, this.radiusLeftTop = radiusLeftTop);
-            shader.setFloatUniform("thickness", this.thickness = thickness);
-            shader.setFloatUniform("refract_intensity", this.intensity = intensity);
-            shader.setFloatUniform("refract_index", this.index = index);
-            shader.setFloatUniform("foreground_color_premultiplied", r, g, b, a);
-            node.setRenderEffect(effect = RenderEffect.createRuntimeShaderEffect(shader, "img"));
+            if (zxc.iconic.xenon.NekoConfig.useAdvancedLiquidGlass) {
+                final float fresnel = Math.max(0.25f, zxc.iconic.xenon.NekoConfig.advancedGlassFresnel);
+                final float refractionHeight = AndroidUtilities.dp(16f) * fresnel;
+                final float refractionAmount = -AndroidUtilities.dp(32f) * fresnel;
+                final float dispersion = Math.max(0.0f, Math.min(1.0f, zxc.iconic.xenon.NekoConfig.advancedGlassDispersion));
+
+                shader.setFloatUniform("size", sX * 2f, sY * 2f);
+                shader.setFloatUniform("center", cX, cY);
+                shader.setFloatUniform("radius", rLT, rRT, rRB, rLB);
+                shader.setFloatUniform("refractionHeight", refractionHeight);
+                shader.setFloatUniform("refractionAmount", refractionAmount);
+                shader.setFloatUniform("depthEffect", 0f);
+                shader.setFloatUniform("chromaticAberration", dispersion);
+                // Blur is done inside our shader on the raw scene. Do not rely on
+                // Telegram's stock frosted pre-blur, because it feeds the shader a
+                // matte texture instead of the actual content under the glass.
+node.setRenderEffect(RenderEffect.createRuntimeShaderEffect(shader, "img"));
+
+                // Update highlight shader uniforms
+                if (highlightShader != null) {
+                    highlightShader.setFloatUniform("size", sX * 2f, sY * 2f);
+                    highlightShader.setFloatUniform("cornerRadii", rLT, rRT, rRB, rLB);
+                    highlightShader.setColorUniform("color", Color.WHITE);
+                    highlightShader.setFloatUniform("angle", (float) Math.toRadians(45));
+                    highlightShader.setFloatUniform("falloff", Math.max(0.1f, zxc.iconic.xenon.NekoConfig.advancedGlassGlare));
+
+                    highlightRect.set(left, top, right, bottom);
+                    highlightCornerRadii = new float[]{rLT, rLT, rRT, rRT, rRB, rRB, rLB, rLB};
+                }
+            } else {
+                shader.setFloatUniform("resolution", resX, resY);
+                shader.setFloatUniform("center", cX, cY);
+                shader.setFloatUniform("size", sX, sY);
+                shader.setFloatUniform("radius", rRB, rRT, rLB, rLT);
+                shader.setFloatUniform("thickness", thickness);
+                shader.setFloatUniform("refract_intensity", intensity);
+                shader.setFloatUniform("refract_index", index);
+                shader.setFloatUniform("foreground_color_premultiplied", r, g, b, a);
+                node.setRenderEffect(RenderEffect.createRuntimeShaderEffect(shader, "img"));
+            }
         }
     }
 
+    /**
+     * Draw the directional edge highlight on top of the glass.
+     * Call this from onDraw() AFTER the glass RenderNode has been drawn.
+     *
+     * <p>The highlight is a thin (0.7 dp) anti-aliased stroke shaded by a
+     * directional RuntimeShader and composited with PLUS blend at low alpha.
+     * Without {@code BlurMaskFilter} on the paint this is a fully
+     * GPU-accelerated draw — clipPath + drawPath with a runtime-shaded
+     * stroke costs almost nothing per frame on hardware-accelerated canvases.
+     */
+    public void drawHighlight(Canvas canvas, float parentAlpha) {
+        if (highlightShader == null || highlightCornerRadii == null) return;
+
+        canvas.save();
+        highlightClipPath.reset();
+        highlightClipPath.addRoundRect(highlightRect, highlightCornerRadii, Path.Direction.CW);
+        canvas.clipPath(highlightClipPath);
+
+        highlightPaint.setAlpha(Math.round(42f * Math.max(0f, Math.min(1f, parentAlpha))));
+        highlightPaint.setShader(highlightShader);
+        canvas.drawPath(highlightClipPath, highlightPaint);
+        canvas.restore();
+    }
 }

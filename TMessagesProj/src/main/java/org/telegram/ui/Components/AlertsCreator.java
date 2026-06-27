@@ -179,8 +179,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-import tw.nekomimi.nekogram.Extra;
-import tw.nekomimi.nekogram.helpers.PasscodeHelper;
+import me.vkryl.core.BitwiseUtils;
+import zxc.iconic.xenon.helpers.PasscodeHelper;
 
 public class AlertsCreator {
     public final static int PERMISSIONS_REQUEST_TOP_ICON_SIZE = 72;
@@ -1018,7 +1018,7 @@ public class AlertsCreator {
         builder.setTitle(getString(R.string.PollV2AddLinkTitle));
         builder.setMessage(getString(R.string.PollV2AddLinkMessage));
 
-        EditTextBoldCursor editText = new EditTextBoldCursor(context) {
+        TextAnimationEditText editText = new TextAnimationEditText(context, resourcesProvider) {
             @Override
             public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
                 InputConnection conn = super.onCreateInputConnection(outAttrs);
@@ -1131,7 +1131,7 @@ public class AlertsCreator {
                 ? R.string.BrowserSettingsAddText
                 : R.string.BrowserSettingsAddTextExternal));
 
-        EditTextBoldCursor editText = new EditTextBoldCursor(context);
+        TextAnimationEditText editText = new TextAnimationEditText(context, resourcesProvider);
         editText.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16);
         editText.setTextColor(Theme.getColor(Theme.key_dialogTextBlack, resourcesProvider));
         editText.setHintTextColor(Theme.getColor(Theme.key_groupcreate_hintText, resourcesProvider));
@@ -2007,10 +2007,6 @@ public class AlertsCreator {
     }
 
     public static void createBotLaunchAlert(BaseFragment fragment, TLRPC.User user, Runnable onConfirm, Runnable onDismiss) {
-        if (Extra.isTrustedBot(user.id)) {
-            onConfirm.run();
-            return;
-        }
         Context context = fragment.getContext();
         AlertDialog.Builder builder = new AlertDialog.Builder(context);
 
@@ -2121,13 +2117,6 @@ public class AlertsCreator {
 
     public static void createBotLaunchAlert(BaseFragment fragment, AtomicBoolean allowWrite, TLRPC.User user, Runnable loadBotSheet) {
         if (fragment == null) {
-            return;
-        }
-        if (Extra.isTrustedBot(user.id)) {
-            if (allowWrite != null) {
-                allowWrite.set(true);
-            }
-            loadBotSheet.run();
             return;
         }
         Context context = fragment.getContext();
@@ -8100,12 +8089,23 @@ public class AlertsCreator {
                 if (mergeDialogId != 0 && selectedMessage.messageOwner.peer_id != null && selectedMessage.messageOwner.peer_id.chat_id == -mergeDialogId) {
                     thisDialogId = mergeDialogId;
                 }
+                if (zxc.iconic.xenon.NekoConfig.enableSaveDeletedMessages && ids != null) {
+                    for (int mid : ids) {
+                        zxc.iconic.xenon.deleted.XenonDeletedState.permitDeleteMessage(thisDialogId, mid);
+                    }
+                }
                 MessagesController.getInstance(currentAccount).deleteMessages(ids, random_ids, encryptedChat, thisDialogId, topicId, deleteForAll[0], mode);
             } else {
                 for (int a = 1; a >= 0; a--) {
                     ids = new ArrayList<>();
                     for (int b = 0; b < selectedMessages[a].size(); b++) {
                         ids.add(selectedMessages[a].keyAt(b));
+                    }
+                    if (zxc.iconic.xenon.NekoConfig.enableSaveDeletedMessages) {
+                        long permDialogId = (a == 1 && mergeDialogId != 0) ? mergeDialogId : thisDialogId;
+                        for (int k = 0; k < ids.size(); k++) {
+                            zxc.iconic.xenon.deleted.XenonDeletedState.permitDeleteMessage(permDialogId, ids.get(k));
+                        }
                     }
                     ArrayList<Long> random_ids = null;
                     if (encryptedChat != null) {
@@ -8226,8 +8226,7 @@ public class AlertsCreator {
                 hideDim.run();
             }
         });
-        AlertDialog dialog = builder.create();
-        fragment.showDialog(dialog);
+        AlertDialog dialog = builder.show();
         TextView positiveButton = (TextView) dialog.getButton(DialogInterface.BUTTON_POSITIVE);
         if (positiveButton != null) {
             positiveButton.setTextColor(Theme.getColor(Theme.key_text_RedBold));
@@ -8245,7 +8244,7 @@ public class AlertsCreator {
             return;
         }
         Context context = fragment.getParentActivity();
-        final EditTextBoldCursor editText = new EditTextBoldCursor(context);
+        final TextAnimationEditText editText = new TextAnimationEditText(context, fragment != null ? fragment.getResourceProvider() : null);
         editText.setBackground(null);
         editText.setLineColors(Theme.getColor(Theme.key_dialogInputField), Theme.getColor(Theme.key_dialogInputFieldActivated), Theme.getColor(Theme.key_text_RedBold));
 
@@ -8744,7 +8743,7 @@ public class AlertsCreator {
         FrameLayout dialogView = new FrameLayout(context);
         dialogView.setClipChildren(false);
 
-        EditText editTextView = new EditTextBoldCursor(context);
+        EditText editTextView = new TextAnimationEditText(context, fragment.getResourceProvider());
         editTextView.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText));
         editTextView.setHint(LocaleController.getString(R.string.SuggestedMessageDeclineReasonHint));
         editTextView.setHintTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteHintText));

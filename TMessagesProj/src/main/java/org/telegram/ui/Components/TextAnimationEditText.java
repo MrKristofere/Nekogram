@@ -1,0 +1,430 @@
+package org.telegram.ui.Components;
+
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
+import android.animation.ValueAnimator;
+import android.content.Context;
+import android.graphics.BlurMaskFilter;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.os.Build;
+import android.os.SystemClock;
+import android.text.Editable;
+import android.text.Layout;
+import android.text.TextWatcher;
+import android.text.style.ForegroundColorSpan;
+import android.view.Gravity;
+import android.view.animation.PathInterpolator;
+import android.widget.TextView;
+
+import org.telegram.messenger.AndroidUtilities;
+import org.telegram.ui.ActionBar.Theme;
+
+import java.lang.reflect.Field;
+import java.util.ArrayList;
+import java.util.Iterator;
+
+import zxc.iconic.xenon.NekoConfig;
+
+public class TextAnimationEditText extends EditTextCaption {
+
+    private static class CharAnim {
+        int index;
+        int endIndex;   // exclusive end — covers full grapheme (surrogate pair, ZWJ seq)
+        long startTime;
+        long duration;
+        long blurDuration;
+    }
+
+    private static class DeletedCharAnim {
+        String ch;
+        float x, y;
+        long startTime;
+        long duration;
+    }
+
+    private static final PathInterpolator bezier = new PathInterpolator(0.47f, 0f, 0f, 1f);
+
+    private final ArrayList<CharAnim> charAnims = new ArrayList<>();
+    private final ArrayList<DeletedCharAnim> deletedCharAnims = new ArrayList<>();
+    private final Paint animPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint cursorPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private float animCursorX = -1;
+    private int animCursorLine = -1;
+    private ValueAnimator cursorAnimator;
+    private boolean cursorAnimating;
+    private int cursorColor = 0xff54a1db;
+
+    private static Field mShowCursorField;
+    private Object editorObj;
+
+    public TextAnimationEditText(Context context, Theme.ResourcesProvider resourcesProvider) {
+        super(context, resourcesProvider);
+        animPaint.setStyle(Paint.Style.FILL);
+        cursorPaint.setStyle(Paint.Style.FILL);
+        addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+                if (!NekoConfig.textAnimationEnabled) return;
+                if (count > 0) {
+                    if (start == 0 && count == s.length()) {
+                        charAnims.clear();
+                        deletedCharAnims.clear();
+                        return;
+                    }
+
+                    Layout layout = getLayout();
+                    if (layout == null) return;
+                    long now = System.currentTimeMillis();
+                    int maxCount = Math.min(count, 50);
+                    for (int i = start; i < start + maxCount && i < s.length(); ) {
+                        int cLen = graphemeClusterLength(s, i, start + maxCount);
+                        DeletedCharAnim anim = new DeletedCharAnim();
+                        anim.ch = s.subSequence(i, Math.min(i + cLen, s.length())).toString();
+                        anim.x = layout.getPrimaryHorizontal(i);
+                        int line = layout.getLineForOffset(i);
+                        anim.y = layout.getLineBaseline(line);
+                        anim.startTime = now;
+                        anim.duration = Math.max(50, NekoConfig.textAnimFadeDuration);
+                        deletedCharAnims.add(anim);
+                        i += cLen;
+                    }
+                    invalidate();
+                }
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+                if (!NekoConfig.textAnimationEnabled) return;
+                if (s.length() == 0) {
+                    charAnims.clear();
+                    deletedCharAnims.clear();
+                    return;
+                }
+                Iterator<CharAnim> it = charAnims.iterator();
+                while (it.hasNext()) {
+                    CharAnim anim = it.next();
+                    if (anim.index >= start && anim.index < start + before) {
+                        it.remove();
+                        continue; // already removed — don't call it.remove() again below
+                    } else if (anim.index >= start) {
+                        int shift = count - before;
+                        anim.index += shift;
+                        anim.endIndex += shift;
+                    }
+                    if (anim.index >= s.length()) {
+                        it.remove();
+                    }
+                }
+                if (count > 0 && s instanceof Editable) {
+                    Editable editable = (Editable) s;
+                    long now = System.currentTimeMillis();
+                    for (int i = start; i < start + count; ) {
+                        if (i >= s.length()) break;
+                        // Determine grapheme cluster length: handle surrogate pairs and
+                        // ZWJ sequences so emoji don't split into two \uFFFD replacement chars.
+                        int clusterLen = graphemeClusterLength(s, i, start + count);
+                        int spanEnd = Math.min(i + clusterLen, s.length());
+                        CharAnim anim = new CharAnim();
+                        anim.index = i;
+                        anim.endIndex = spanEnd;
+                        anim.startTime = now;
+                        anim.duration = Math.max(50, NekoConfig.textAnimFadeDuration);
+                        anim.blurDuration = Math.max(50, NekoConfig.textAnimBlurDuration);
+                        charAnims.add(anim);
+                        editable.setSpan(new ForegroundColorSpan(Color.TRANSPARENT), i, spanEnd, Editable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                        i += clusterLen;
+                    }
+                    invalidate();
+                }
+            }
+
+            @Override
+            public void afterTextChanged(Editable s) {
+                charAnims.removeIf(a -> a.index >= s.length() || a.endIndex > s.length());
+            }
+        });
+    }
+
+    @Override
+    public void setCursorColor(int color) {
+        super.setCursorColor(color);
+        cursorColor = color;
+    }
+
+    @Override
+    protected void onSelectionChanged(int selStart, int selEnd) {
+        super.onSelectionChanged(selStart, selEnd);
+        if (!NekoConfig.textAnimationEnabled || NekoConfig.textAnimCursorSpeed <= 0) return;
+        Layout layout = getLayout();
+        if (layout == null) return;
+        float newX = layout.getPrimaryHorizontal(selStart);
+        int newLine = layout.getLineForOffset(selStart);
+        if (newLine != animCursorLine) {
+            animCursorLine = newLine;
+            animCursorX = newX;
+            if (cursorAnimator != null) {
+                cursorAnimator.cancel();
+            }
+            invalidate();
+            return;
+        }
+        if (animCursorX < 0) {
+            animCursorX = newX;
+            return;
+        }
+        if (Math.abs(newX - animCursorX) < AndroidUtilities.dp(1)) {
+            animCursorX = newX;
+            return;
+        }
+        if (cursorAnimator != null) {
+            cursorAnimator.cancel();
+        }
+        float fromX = animCursorX;
+        long duration = Math.max(50, 500 - NekoConfig.textAnimCursorSpeed * 4);
+        cursorAnimator = ValueAnimator.ofFloat(fromX, newX);
+        cursorAnimator.setDuration(duration);
+        cursorAnimator.setInterpolator(bezier);
+        cursorAnimator.addUpdateListener(a -> {
+            animCursorX = (float) a.getAnimatedValue();
+            cursorAnimating = true;
+            invalidate();
+        });
+        cursorAnimator.addListener(new AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(Animator animation) {
+                cursorAnimating = false;
+                invalidate();
+            }
+        });
+        cursorAnimator.start();
+    }
+
+    private boolean isCursorBlinkVisible() {
+        try {
+            if (mShowCursorField == null) {
+                Field mEditorField = TextView.class.getDeclaredField("mEditor");
+                mEditorField.setAccessible(true);
+                editorObj = mEditorField.get(this);
+                mShowCursorField = editorObj.getClass().getDeclaredField("mShowCursor");
+                mShowCursorField.setAccessible(true);
+            }
+            if (mShowCursorField != null && editorObj != null) {
+                long mShowCursor = mShowCursorField.getLong(editorObj);
+                return (SystemClock.uptimeMillis() - mShowCursor) % (2 * 500) < 500 && isFocused();
+            }
+        } catch (Exception e) {}
+        return true;
+    }
+
+    @Override
+    protected void onDraw(Canvas canvas) {
+        boolean smoothCursor = NekoConfig.textAnimationEnabled && NekoConfig.textAnimCursorSpeed > 0 && cursorAnimating;
+        float origWidth = getCursorWidth();
+        if (smoothCursor) {
+            setCursorWidth(0);
+        }
+        super.onDraw(canvas);
+        if (smoothCursor) {
+            setCursorWidth(origWidth);
+            drawAnimatedCursor(canvas);
+        }
+        drawCharAnimations(canvas);
+    }
+
+    private void drawAnimatedCursor(Canvas canvas) {
+        if (!isCursorBlinkVisible()) return;
+        Layout layout = getLayout();
+        if (layout == null) return;
+        int sel = getSelectionStart();
+        int line = layout.getLineForOffset(sel);
+        canvas.save();
+        int voffsetCursor = 0;
+        if ((getGravity() & Gravity.VERTICAL_GRAVITY_MASK) != Gravity.TOP) {
+            voffsetCursor = getTotalPaddingTop() - getExtendedPaddingTop();
+        }
+        canvas.translate(getPaddingLeft(), getExtendedPaddingTop() + voffsetCursor);
+        cursorPaint.setColor(cursorColor);
+        float x = animCursorX;
+        float lineTop = layout.getLineTop(line);
+        float lineBottom = layout.getLineBottom(line);
+        // Use actual line height so cursor matches text size (not a hardcoded dp(24)).
+        float cursorSize = lineBottom - lineTop;
+        float centerY = (lineTop + lineBottom) / 2;
+        canvas.drawRect(x, centerY - cursorSize / 2, x + AndroidUtilities.dp(2), centerY + cursorSize / 2, cursorPaint);
+        canvas.restore();
+    }
+
+    private void drawCharAnimations(Canvas canvas) {
+        if (!NekoConfig.textAnimationEnabled || (charAnims.isEmpty() && deletedCharAnims.isEmpty())) return;
+        Layout layout = getLayout();
+        if (layout == null) return;
+
+        long now = System.currentTimeMillis();
+
+        canvas.save();
+        int voffsetText = 0;
+        if ((getGravity() & Gravity.VERTICAL_GRAVITY_MASK) != Gravity.TOP) {
+            voffsetText = getTotalPaddingTop() - getExtendedPaddingTop();
+        }
+
+        int scrollX = getScrollX();
+        int scrollY = getScrollY();
+        canvas.clipRect(
+                scrollX + getPaddingLeft(),
+                scrollY + getExtendedPaddingTop(),
+                scrollX + getWidth() - getPaddingRight(),
+                scrollY + getHeight() - getExtendedPaddingBottom()
+        );
+
+        canvas.translate(getPaddingLeft(), getExtendedPaddingTop() + voffsetText);
+
+        animPaint.setColor(getCurrentTextColor());
+        animPaint.setTypeface(getTypeface());
+        animPaint.setTextSize(getTextSize());
+        animPaint.setStyle(Paint.Style.FILL);
+
+        int blur = NekoConfig.textAnimBlurStrength;
+
+        // --- 1. APPEARANCE ANIMATION ---
+        CharSequence text = getText();
+        if (text != null && !charAnims.isEmpty()) {
+            Iterator<CharAnim> it = charAnims.iterator();
+            while (it.hasNext()) {
+                CharAnim anim = it.next();
+                if (anim.index >= text.length()) {
+                    it.remove();
+                    continue;
+                }
+
+                long elapsed = now - anim.startTime;
+                float linearProgress = Math.min(1f, elapsed / (float) Math.max(1, anim.duration));
+                if (linearProgress >= 1) {
+                    it.remove();
+
+                    float x = layout.getPrimaryHorizontal(anim.index);
+                    int line = layout.getLineForOffset(anim.index);
+                    float y = layout.getLineBaseline(line);
+                    int safeEnd = Math.min(anim.endIndex, text.length());
+                    String ch = text.subSequence(anim.index, safeEnd).toString();
+                    animPaint.setAlpha(255);
+                    animPaint.setMaskFilter(null);
+                    canvas.drawText(ch, x, y, animPaint);
+
+                    final int doneStart = anim.index;
+                    final int doneEnd = safeEnd;
+                    post(() -> {
+                        Editable editable = getText();
+                        if (editable != null && doneStart < editable.length()) {
+                            int end = Math.min(doneEnd, editable.length());
+                            ForegroundColorSpan[] spans = editable.getSpans(doneStart, end, ForegroundColorSpan.class);
+                            for (ForegroundColorSpan span : spans) {
+                                if (span.getForegroundColor() == Color.TRANSPARENT) {
+                                    editable.removeSpan(span);
+                                }
+                            }
+                        }
+                    });
+                    continue;
+                }
+
+                float progress = bezier.getInterpolation(linearProgress);
+
+                float x = layout.getPrimaryHorizontal(anim.index);
+                int line = layout.getLineForOffset(anim.index);
+                float y = layout.getLineBaseline(line);
+                String ch = text.subSequence(anim.index, Math.min(anim.endIndex, text.length())).toString();
+
+                int alpha = (int) (progress * 255);
+                animPaint.setAlpha(alpha);
+                animPaint.setMaskFilter(null);
+
+                // Skip blur for multi-char clusters (emoji surrogate pairs, ZWJ seqs).
+                // BlurMaskFilter has no effect on bitmap glyphs and just wastes time.
+                final boolean isSingleScalarChar = (anim.endIndex - anim.index) == 1;
+                if (blur > 0 && isSingleScalarChar && Build.VERSION.SDK_INT >= 26) {
+                    float blurLinear = Math.min(1f, elapsed / (float) Math.max(1, anim.blurDuration));
+                    float blurProgress = bezier.getInterpolation(blurLinear);
+                    float blurRadius = blur * (1 - blurProgress);
+                    if (blurRadius > 0.5f) {
+                        animPaint.setMaskFilter(new BlurMaskFilter(blurRadius, BlurMaskFilter.Blur.NORMAL));
+                    }
+                }
+
+                canvas.drawText(ch, x, y, animPaint);
+            }
+        }
+
+        // --- 2. DISAPPEARANCE ANIMATION (Reverse blur) ---
+        if (!deletedCharAnims.isEmpty()) {
+            Iterator<DeletedCharAnim> delIt = deletedCharAnims.iterator();
+            while (delIt.hasNext()) {
+                DeletedCharAnim anim = delIt.next();
+
+                long elapsed = now - anim.startTime;
+                float linearProgress = Math.min(1f, elapsed / (float) Math.max(1, anim.duration));
+                float progress = bezier.getInterpolation(linearProgress);
+
+                if (progress >= 1) {
+                    delIt.remove();
+                    continue;
+                }
+
+                int alpha = (int) ((1 - progress) * 255);
+                animPaint.setAlpha(alpha);
+                animPaint.setMaskFilter(null);
+
+                if (blur > 0 && Build.VERSION.SDK_INT >= 26) {
+                    float blurRadius = blur * progress;
+                    if (blurRadius > 0.5f) {
+                        animPaint.setMaskFilter(new BlurMaskFilter(blurRadius, BlurMaskFilter.Blur.NORMAL));
+                    }
+                }
+
+                canvas.drawText(anim.ch, anim.x, anim.y, animPaint);
+            }
+        }
+
+        animPaint.setMaskFilter(null);
+        canvas.restore();
+
+        if (!charAnims.isEmpty() || !deletedCharAnims.isEmpty()) {
+            invalidate();
+        }
+    }
+
+    /**
+     * Returns the number of {@code char} values that form one grapheme cluster
+     * starting at {@code pos} in {@code s}. Covers:
+     * <ul>
+     *   <li>Surrogate pairs (basic emoji, e.g. \uD83D\uDE00 = \uD83D + \uDE00)
+     *   <li>Variation selectors (\uFE0F / \uFE0E after an emoji code point)
+     *   <li>Combining Enclosing Keycap (\u20E3)
+     *   <li>ZWJ sequences (e.g. family emoji: base + \u200D + another emoji ...)
+     * </ul>
+     * All other characters return 1.
+     *
+     * @param limit upper bound (exclusive) on how many chars we may consume
+     */
+    private static int graphemeClusterLength(CharSequence s, int pos, int limit) {
+        if (pos >= s.length()) return 1;
+        int len = Character.charCount(Character.codePointAt(s, pos));
+        // ZWJ-sequence: keep consuming ZWJ + next code point pairs
+        while (pos + len < limit && pos + len < s.length()) {
+            char next = s.charAt(pos + len);
+            if (next == '\u200D') {
+                // Zero-Width Joiner: absorb ZWJ + following code point
+                if (pos + len + 1 >= s.length()) break;
+                int followLen = Character.charCount(Character.codePointAt(s, pos + len + 1));
+                len += 1 + followLen;
+            } else if (next == '\uFE0F' || next == '\uFE0E' || next == '\u20E3') {
+                // Variation selector or combining enclosing keycap
+                len += 1;
+            } else {
+                break;
+            }
+        }
+        return len;
+    }
+}
