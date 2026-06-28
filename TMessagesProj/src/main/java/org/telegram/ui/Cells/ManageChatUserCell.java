@@ -12,12 +12,14 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.PorterDuff;
 import android.graphics.PorterDuffColorFilter;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ChatObject;
+import org.telegram.messenger.DialogObject;
 import org.telegram.messenger.Emoji;
 import org.telegram.messenger.LocaleController;
 import org.telegram.messenger.MessagesController;
@@ -53,6 +55,7 @@ public class ManageChatUserCell extends FrameLayout {
     private TLRPC.FileLocation lastAvatar;
     private boolean isAdmin;
     private boolean needDivider;
+    private boolean subtitleUsername;
     private int statusColor;
     private int statusOnlineColor;
     private final int namePadding;
@@ -174,7 +177,7 @@ public class ManageChatUserCell extends FrameLayout {
         currentObject = object;
         if (optionsButton != null) {
             boolean visible = delegate.onOptionsButtonCheck(ManageChatUserCell.this, false);
-            optionsButton.setVisibility(visible ? VISIBLE : INVISIBLE);
+            optionsButton.setVisibility(visible ? VISIBLE : GONE);
             nameTextView.setLayoutParams(LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 20, (LocaleController.isRTL ? Gravity.RIGHT : Gravity.LEFT) | Gravity.TOP, LocaleController.isRTL ? (visible ? 46 : 28) : (68 + namePadding), status == null || status.length() > 0 ? 11.5f : 20.5f, LocaleController.isRTL ? (68 + namePadding) : (visible ? 46 : 28), 0));
             statusTextView.setLayoutParams(LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 20, (LocaleController.isRTL ? Gravity.RIGHT : Gravity.LEFT) | Gravity.TOP, LocaleController.isRTL ? (visible ? 46 : 28) : (68 + namePadding), 34.5f, LocaleController.isRTL ? (68 + namePadding) : (visible ? 46 : 28), 0));
         } else if (customImageView != null) {
@@ -206,6 +209,10 @@ public class ManageChatUserCell extends FrameLayout {
 
     public void setIsAdmin(boolean value) {
         isAdmin = value;
+    }
+
+    public void setUsernameSubtitle() {
+        subtitleUsername = true;
     }
 
     public boolean hasAvatarSet() {
@@ -278,15 +285,21 @@ public class ManageChatUserCell extends FrameLayout {
                 statusTextView.setTextColor(statusColor);
                 statusTextView.setText(currentStatus);
             } else {
+                final String username = DialogObject.getPublicUsername(currentUser);
                 if (currentUser.bot) {
                     statusTextView.setTextColor(statusColor);
-                    if (currentUser.bot_chat_history || isAdmin) {
+                    if (subtitleUsername && !TextUtils.isEmpty(username)) {
+                        statusTextView.setText(username);
+                    } else if (currentUser.bot_chat_history || isAdmin) {
                         statusTextView.setText(LocaleController.getString(R.string.BotStatusRead));
                     } else {
                         statusTextView.setText(LocaleController.getString(R.string.BotStatusCantRead));
                     }
                 } else {
-                    if (currentUser.id == UserConfig.getInstance(currentAccount).getClientUserId() || currentUser.status != null && currentUser.status.expires > ConnectionsManager.getInstance(currentAccount).getCurrentTime() || MessagesController.getInstance(currentAccount).onlinePrivacy.containsKey(currentUser.id)) {
+                    if (subtitleUsername && !TextUtils.isEmpty(username)) {
+                        statusTextView.setText(username);
+                        statusTextView.setTextColor(statusColor);
+                    } else if (currentUser.id == UserConfig.getInstance(currentAccount).getClientUserId() || currentUser.status != null && currentUser.status.expires > ConnectionsManager.getInstance(currentAccount).getCurrentTime() || MessagesController.getInstance(currentAccount).onlinePrivacy.containsKey(currentUser.id)) {
                         statusTextView.setTextColor(statusOnlineColor);
                         statusTextView.setText(LocaleController.getString(R.string.Online));
                     } else {

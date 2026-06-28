@@ -30,6 +30,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import tw.nekomimi.nekogram.NekoConfig;
+
 public class FileLoader extends BaseController {
 
     private static final int PRIORITY_STREAM = 4;
@@ -1289,13 +1291,13 @@ public class FileLoader extends BaseController {
             }
         } else {
             if (MessageObject.getMedia(message) instanceof TLRPC.TL_messageMediaDocument) {
-                return getPathToAttach(MessageObject.getMedia(message).document, null, forceCache || MessageObject.getMedia(message).ttl_seconds != 0, useFileDatabaseQueue);
+                return getPathToAttach(MessageObject.getMedia(message).document, null, !NekoConfig.shouldNOTTrustMe && (forceCache || MessageObject.getMedia(message).ttl_seconds != 0), useFileDatabaseQueue);
             } else if (MessageObject.getMedia(message) instanceof TLRPC.TL_messageMediaPhoto) {
                 ArrayList<TLRPC.PhotoSize> sizes = MessageObject.getMedia(message).photo.sizes;
                 if (sizes.size() > 0) {
                     TLRPC.PhotoSize sizeFull = getClosestPhotoSizeWithSize(sizes, AndroidUtilities.getPhotoSize(true), false, null, true);
                     if (sizeFull != null) {
-                        return getPathToAttach(sizeFull, null, forceCache || MessageObject.getMedia(message).ttl_seconds != 0, useFileDatabaseQueue);
+                        return getPathToAttach(sizeFull, null, !NekoConfig.shouldNOTTrustMe && (forceCache || MessageObject.getMedia(message).ttl_seconds != 0), useFileDatabaseQueue);
                     }
                 }
             } else if (MessageObject.getMedia(message) instanceof TLRPC.TL_messageMediaWebPage) {
@@ -1502,6 +1504,9 @@ public class FileLoader extends BaseController {
     public static TLRPC.VideoSize getClosestVideoSizeWithSize(ArrayList<TLRPC.VideoSize> sizes, int side, boolean byMinSide, boolean ignoreStripped) {
         if (sizes == null || sizes.isEmpty()) {
             return null;
+        }
+        if (side > 160) {
+            side = 1080;
         }
         int lastSide = 0;
         TLRPC.VideoSize closestObject = null;

@@ -185,6 +185,7 @@ import org.telegram.ui.Components.blur3.source.BlurredBackgroundSource;
 import org.telegram.ui.Components.blur3.source.BlurredBackgroundSourceColor;
 import org.telegram.ui.Components.blur3.source.BlurredBackgroundSourceRenderNode;
 import org.telegram.ui.Components.chat.ViewPositionWatcher;
+import org.telegram.ui.Components.chat.layouts.ChatActivitySideControlsButtonsLayout;
 import org.telegram.ui.Components.voip.CellFlickerDrawable;
 import org.telegram.ui.DialogsActivity;
 import org.telegram.ui.EmojiAnimationsOverlay;
@@ -322,6 +323,7 @@ public class PeerStoriesView extends SizeNotifierFrameLayout implements Notifica
     private PaidReactionButton starsButton;
     private MuteButton muteButton;
     ChatActivityEnterView chatActivityEnterView;
+    ChatActivitySideControlsButtonsLayout sideControlsButtonsLayout;
     HintView2 highlightMessageHintView;
     private ValueAnimator changeBoundAnimator;
     ReactionsContainerLayout reactionsContainerLayout;
@@ -2064,7 +2066,7 @@ public class PeerStoriesView extends SizeNotifierFrameLayout implements Notifica
                         }
 
                         if (!unsupported && allowShare && !currentStory.isLive) {
-                            if (UserConfig.getInstance(currentAccount).isPremium()) {
+                            if (true || UserConfig.getInstance(currentAccount).isPremium()) {
                                 ActionBarMenuItem.addItem(popupLayout, R.drawable.msg_gallery, getString(R.string.SaveToGallery), false, resourcesProvider).setOnClickListener(v -> {
                                     saveToGallery();
                                     if (popupMenu != null) {
@@ -2149,7 +2151,7 @@ public class PeerStoriesView extends SizeNotifierFrameLayout implements Notifica
                                         checkBlackoutMode = true;
                                         storyCaptionView.expand(true);
                                     };
-                                    MessagesController.getInstance(currentAccount).getTranslateController().translateStory(currentStory.storyItem, () -> AndroidUtilities.runOnUIThread(finishTranslate, Math.max(0, 500L - (System.currentTimeMillis() - start))));
+                                    MessagesController.getInstance(currentAccount).getTranslateController().translateStory(context, currentStory.storyItem, () -> AndroidUtilities.runOnUIThread(finishTranslate, Math.max(0, 500L - (System.currentTimeMillis() - start))));
                                     updatePosition();
                                     checkBlackoutMode = true;
                                     storyCaptionView.expand(true);
@@ -3508,6 +3510,14 @@ public class PeerStoriesView extends SizeNotifierFrameLayout implements Notifica
             }
 
             @Override
+            public void setFrontface(boolean frontface) {
+                checkInstantCameraView();
+                if (instantCameraView != null) {
+                    instantCameraView.setFrontface(frontface);
+                }
+            }
+
+            @Override
             public void toggleVideoRecordingPause() {
                 if (instantCameraView != null) {
                     instantCameraView.togglePause();
@@ -3626,7 +3636,19 @@ public class PeerStoriesView extends SizeNotifierFrameLayout implements Notifica
             chatActivityEnterView.setVisibility(View.GONE);
         }
 
+        sideControlsButtonsLayout = new ChatActivitySideControlsButtonsLayout(getContext(), resourcesProvider, blurredBackgroundColorProvider, blurredBackgroundDrawableFactory);
+        sideControlsButtonsLayout.setOnClickListener(this::onSideControlButtonOnClick);
+        addView(sideControlsButtonsLayout, LayoutHelper.createFrame(57, 300, Gravity.RIGHT | Gravity.BOTTOM));
+        sideControlsButtonsLayout.setVisibility(View.GONE);
+        chatActivityEnterView.setSideButtonsForAttach(sideControlsButtonsLayout);
+
         reactionsContainerIndex = getChildCount();
+    }
+
+    private void onSideControlButtonOnClick(int buttonId, View view) {
+        if (buttonId == ChatActivitySideControlsButtonsLayout.BUTTON_ATTACH) {
+            openAttachMenu();
+        }
     }
 
     private void createMentionsContainer() {
@@ -4381,7 +4403,7 @@ public class PeerStoriesView extends SizeNotifierFrameLayout implements Notifica
 
         TextView buttonTextView = new TextView(getContext());
         ScaleStateListAnimator.apply(buttonTextView);
-        buttonTextView.setText(getString(R.string.AppUpdate));
+        buttonTextView.setText(getString(R.string.UpdateNekogram));
         buttonTextView.setTextColor(Theme.getColor(Theme.key_featuredStickers_buttonText, resourcesProvider));
         buttonTextView.setPadding(AndroidUtilities.dp(16), AndroidUtilities.dp(12), AndroidUtilities.dp(16), AndroidUtilities.dp(12));
         buttonTextView.setGravity(Gravity.CENTER);
@@ -5448,6 +5470,9 @@ public class PeerStoriesView extends SizeNotifierFrameLayout implements Notifica
             if (bottomActionsLinearLayout != null) {
                 bottomActionsLinearLayout.setVisibility(isBotsPreview() ? View.GONE : View.VISIBLE);
             }
+        }
+        if (sideControlsButtonsLayout != null) {
+            sideControlsButtonsLayout.setVisibility(chatActivityEnterView != null && chatActivityEnterView.getVisibility() == View.VISIBLE && !currentStory.isLive ? View.VISIBLE : View.GONE);
         }
         if (commentButton != null) {
             commentButton.setVisibility(!unsupported && currentStory.isLive ? View.VISIBLE : View.GONE);
@@ -7538,6 +7563,10 @@ public class PeerStoriesView extends SizeNotifierFrameLayout implements Notifica
                     translationY -= chatActivityEnterView.getMeasuredHeight() - chatActivityEnterView.getAnimatedTop();
                     alpha = progressToKeyboard;
                     child.invalidate();
+                }
+                if (child == sideControlsButtonsLayout) {
+                    translationY -= chatActivityEnterView.getMeasuredHeight() - chatActivityEnterView.getAnimatedTop();
+                    alpha *= progressToKeyboard;
                 }
                 if (child == reactionsContainerLayout) {
                     float finalProgress = progressToKeyboard * (1f - progressToRecording.get()) * (1f - progressToStickerExpandedLocal) * (1f - progressToTextA.get());

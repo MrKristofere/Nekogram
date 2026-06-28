@@ -32,6 +32,7 @@ import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Bundle;
+import android.view.accessibility.AccessibilityNodeInfo;
 import android.text.Layout;
 import android.text.SpannableString;
 import android.text.SpannableStringBuilder;
@@ -49,7 +50,6 @@ import android.util.SparseArray;
 import android.util.SparseBooleanArray;
 import android.util.TypedValue;
 import android.view.Gravity;
-import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.VelocityTracker;
@@ -150,7 +150,6 @@ import org.telegram.ui.Gifts.ProfileGiftsContainer;
 import org.telegram.ui.LaunchActivity;
 import org.telegram.ui.LocationActivity;
 import org.telegram.ui.PhotoViewer;
-import org.telegram.ui.PollItemMenu;
 import org.telegram.ui.PremiumPreviewFragment;
 import org.telegram.ui.ProfileActivity;
 import org.telegram.ui.ProfileActivity2;
@@ -175,8 +174,13 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Objects;
 
+import tw.nekomimi.nekogram.NekoConfig;
+import tw.nekomimi.nekogram.forward.ForwardContext;
+import tw.nekomimi.nekogram.forward.ForwardDrawable;
+import tw.nekomimi.nekogram.forward.ForwardItem;
+
 @SuppressWarnings("unchecked")
-public class SharedMediaLayout extends FrameLayout implements NotificationCenter.NotificationCenterDelegate, DialogCell.DialogCellDelegate {
+public class SharedMediaLayout extends FrameLayout implements NotificationCenter.NotificationCenterDelegate, DialogCell.DialogCellDelegate, ForwardContext {
 
     private final static boolean SHOW_CONTEXT_VIEW_AS_BUBBLE = true;
 
@@ -460,6 +464,23 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
     }
 
     @Override
+    public ArrayList<MessageObject> getForwardingMessages() {
+        ArrayList<MessageObject> fmessages = new ArrayList<>();
+        for (int a = 1; a >= 0; a--) {
+            ArrayList<Integer> ids = new ArrayList<>();
+            for (int b = 0; b < selectedFiles[a].size(); b++) {
+                ids.add(selectedFiles[a].keyAt(b));
+            }
+            Collections.sort(ids);
+            for (Integer id1 : ids) {
+                if (id1 > 0) {
+                    fmessages.add(selectedFiles[a].get(id1));
+                }
+            }
+        }
+        return fmessages;
+    }
+
     public void onButtonClicked(DialogCell dialogCell) {
 
     }
@@ -694,6 +715,7 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
     public ImageView photoVideoOptionsItem;
     private RLottieImageView optionsSearchImageView;
     private ActionBarMenuItem forwardItem;
+    private ActionBarMenuItem forwardNoQuoteItem;
     private ActionBarMenuItem gotoItem;
     private ActionBarMenuItem pinItem;
     private ActionBarMenuItem unpinItem;
@@ -770,6 +792,7 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
         private int[] mediaMergeCount = new int[]{-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
         private int[] lastMediaCount = new int[]{-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
         private int[] lastLoadMediaCount = new int[]{-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+        private int[] lastLoadMergeMediaCount = new int[]{-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
         public boolean hasPreviews;
         public boolean hasSavedMessages;
         private boolean checkedHasSavedMessages;
@@ -801,6 +824,8 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
             return false;
         }
 
+        private final NotificationCenter.ObserversGroup observersGroup;
+
         public SharedMediaPreloader(BaseFragment fragment) {
             parentFragment = fragment;
             if (fragment instanceof ChatActivityInterface) {
@@ -827,6 +852,10 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                 } else {
                     dialogId = profileActivity.getDialogId();
                     topicId = profileActivity.getTopicId();
+                    final TLRPC.ChatFull chatInfo = profileActivity.getChatInfo();
+                    if (chatInfo != null) {
+                        setChatInfo(chatInfo);
+                    }
 
                     if (dialogId != fragment.getUserConfig().getClientUserId()) {
                         fragment.getMessagesController().getSavedMessagesController().hasSavedMessages(dialogId, hasMessages -> {
@@ -863,26 +892,39 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                 }
             }
 
+            if (mergeDialogId == 0 && DialogObject.isChatDialog(dialogId)) {
+                TLRPC.ChatFull cachedChatFull = fragment.getMessagesController().getChatFull(-dialogId);
+                if (cachedChatFull != null && cachedChatFull.migrated_from_chat_id != 0) {
+                    mergeDialogId = -cachedChatFull.migrated_from_chat_id;
+                }
+            }
+
             sharedMediaData = new SharedMediaData[9];
             for (int a = 0; a < sharedMediaData.length; a++) {
                 sharedMediaData[a] = new SharedMediaData();
                 sharedMediaData[a].setMaxId(0, DialogObject.isEncryptedDialog(dialogId) ? Integer.MIN_VALUE : Integer.MAX_VALUE);
+                sharedMediaData[a].setMaxId(1, Integer.MAX_VALUE);
             }
             loadMediaCounts();
 
-            if (parentFragment == null) return;
-            NotificationCenter notificationCenter = parentFragment.getNotificationCenter();
-            notificationCenter.addObserver(this, NotificationCenter.mediaCountsDidLoad);
-            notificationCenter.addObserver(this, NotificationCenter.mediaCountDidLoad);
-            notificationCenter.addObserver(this, NotificationCenter.didReceiveNewMessages);
-            notificationCenter.addObserver(this, NotificationCenter.messageReceivedByServer);
-            notificationCenter.addObserver(this, NotificationCenter.mediaDidLoad);
-            notificationCenter.addObserver(this, NotificationCenter.messagesDeleted);
-            notificationCenter.addObserver(this, NotificationCenter.replaceMessagesObjects);
-            notificationCenter.addObserver(this, NotificationCenter.chatInfoDidLoad);
-            notificationCenter.addObserver(this, NotificationCenter.fileLoaded);
-            notificationCenter.addObserver(this, NotificationCenter.storiesListUpdated);
-            notificationCenter.addObserver(this, NotificationCenter.savedMessagesDialogsUpdate);
+            if (parentFragment == null) {
+                observersGroup = null;
+                return;
+            }
+
+            final NotificationCenter notificationCenter = parentFragment.getNotificationCenter();
+            observersGroup = notificationCenter.createObserversGroup(this)
+                .add(NotificationCenter.mediaCountsDidLoad)
+                .add(NotificationCenter.mediaCountDidLoad)
+                .add(NotificationCenter.didReceiveNewMessages)
+                .add(NotificationCenter.messageReceivedByServer)
+                .add(NotificationCenter.mediaDidLoad)
+                .add(NotificationCenter.messagesDeleted)
+                .add(NotificationCenter.replaceMessagesObjects)
+                .add(NotificationCenter.chatInfoDidLoad)
+                .add(NotificationCenter.fileLoaded)
+                .add(NotificationCenter.storiesListUpdated)
+                .add(NotificationCenter.savedMessagesDialogsUpdate);
         }
 
         public void addDelegate(SharedMediaPreloaderDelegate delegate) {
@@ -898,19 +940,9 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                 return;
             }
             delegates.clear();
-            if (parentFragment == null) return;
-            NotificationCenter notificationCenter = parentFragment.getNotificationCenter();
-            notificationCenter.removeObserver(this, NotificationCenter.mediaCountsDidLoad);
-            notificationCenter.removeObserver(this, NotificationCenter.mediaCountDidLoad);
-            notificationCenter.removeObserver(this, NotificationCenter.didReceiveNewMessages);
-            notificationCenter.removeObserver(this, NotificationCenter.messageReceivedByServer);
-            notificationCenter.removeObserver(this, NotificationCenter.mediaDidLoad);
-            notificationCenter.removeObserver(this, NotificationCenter.messagesDeleted);
-            notificationCenter.removeObserver(this, NotificationCenter.replaceMessagesObjects);
-            notificationCenter.removeObserver(this, NotificationCenter.chatInfoDidLoad);
-            notificationCenter.removeObserver(this, NotificationCenter.fileLoaded);
-            notificationCenter.removeObserver(this, NotificationCenter.storiesListUpdated);
-            notificationCenter.removeObserver(this, NotificationCenter.savedMessagesDialogsUpdate);
+            if (observersGroup != null) {
+                observersGroup.removeAllObservers();
+            }
         }
 
         public int[] getLastMediaCount() {
@@ -950,8 +982,19 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                                     type = MediaDataController.MEDIA_VIDEOS_ONLY;
                                 }
                             }
-                            parentFragment.getMediaDataController().loadMedia(did, lastLoadMediaCount[a] == -1 ? 30 : 20, 0, 0, type, topicId, 1, parentFragment.getClassGuid(), 0, null, null);
+                            parentFragment.getMediaDataController().loadMedia(did, lastLoadMediaCount[a] == -1 ? 30 : 20, 0, 0, type, topicId, 1, parentFragment.getClassGuid(), sharedMediaData[a].requestIndex, null, null);
                             lastLoadMediaCount[a] = mediaCount[a];
+                        } else if (did == mergeDialogId && lastMediaCount[a] != 0 && lastLoadMergeMediaCount[a] != mediaMergeCount[a]) {
+                            int type = a;
+                            if (type == 0) {
+                                if (sharedMediaData[0].filterType == FILTER_PHOTOS_ONLY) {
+                                    type = MediaDataController.MEDIA_PHOTOS_ONLY;
+                                } else if (sharedMediaData[0].filterType == FILTER_VIDEOS_ONLY) {
+                                    type = MediaDataController.MEDIA_VIDEOS_ONLY;
+                                }
+                            }
+                            parentFragment.getMediaDataController().loadMedia(did, lastLoadMergeMediaCount[a] == -1 ? 30 : 20, 0, 0, type, topicId, 1, parentFragment.getClassGuid(), sharedMediaData[a].requestIndex, null, null);
+                            lastLoadMergeMediaCount[a] = mediaMergeCount[a];
                         }
                     }
                     mediaWasLoaded = true;
@@ -986,9 +1029,11 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                 if (scheduled) {
                     return;
                 }
-                if (dialogId == (Long) args[0]) {
-                    boolean enc = DialogObject.isEncryptedDialog(dialogId);
-                    ArrayList<MessageObject> arr = (ArrayList<MessageObject>) args[1];
+                final long did = (Long) args[0];
+                if (did == dialogId || did == mergeDialogId) {
+                    final int loadIndex = did == dialogId ? 0 : 1;
+                    final boolean enc = DialogObject.isEncryptedDialog(did);
+                    final ArrayList<MessageObject> arr = (ArrayList<MessageObject>) args[1];
                     final int currentAccount = parentFragment != null ? parentFragment.getCurrentAccount() : -1;
                     for (int a = 0; a < arr.size(); a++) {
                         MessageObject obj = arr.get(a);
@@ -1009,13 +1054,16 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                             continue;
                         }
                         if (sharedMediaData[type].startReached) {
-                            sharedMediaData[type].addMessage(obj, 0, true, enc);
+                            sharedMediaData[type].addMessage(obj, loadIndex, true, enc);
                         }
                         if (topicId == 0) {
-                            sharedMediaData[type].totalCount++;
+                            sharedMediaData[type].totalCount[loadIndex]++;
                         }
-                        for (int i = 0; i < sharedMediaData[type].fastScrollPeriods.size(); i++) {
-                            sharedMediaData[type].fastScrollPeriods.get(i).startOffset++;
+                        if (loadIndex == 0) {
+                            // TODO: support loadIndex == 1
+                            for (int i = 0; i < sharedMediaData[type].fastScrollPeriods.size(); i++) {
+                                sharedMediaData[type].fastScrollPeriods.get(i).startOffset++;
+                            }
                         }
                     }
                     loadMediaCounts();
@@ -1027,17 +1075,18 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                 }
                 Integer msgId = (Integer) args[0];
                 Integer newMsgId = (Integer) args[1];
-                for (int a = 0; a < sharedMediaData.length; a++) {
-                    sharedMediaData[a].replaceMid(msgId, newMsgId);
+                Long did = (Long) args[3];
+                if (did == dialogId || did == mergeDialogId) {
+                    final int loadIndex = did == dialogId ? 0 : 1;
+                    for (int a = 0; a < sharedMediaData.length; a++) {
+                        sharedMediaData[a].replaceMid(loadIndex, msgId, newMsgId);
+                    }
                 }
             } else if (id == NotificationCenter.mediaDidLoad) {
                 long did = (Long) args[0];
                 int guid = (Integer) args[3];
                 if (guid == parentFragment.getClassGuid()) {
                     int type = (Integer) args[4];
-                    if (type != 0 && type != 6 && type != 7 && type != 1 && type != 2 && type != 4) {
-                        sharedMediaData[type].setTotalCount((Integer) args[1]);
-                    }
                     ArrayList<MessageObject> arr = (ArrayList<MessageObject>) args[2];
                     boolean enc = DialogObject.isEncryptedDialog(did);
                     int loadIndex = did == dialogId ? 0 : 1;
@@ -1047,9 +1096,10 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                         }
                         type = 0;
                     }
-                    if (!arr.isEmpty()) {
-                        sharedMediaData[type].setEndReached(loadIndex, (Boolean) args[5]);
+                    if (type != 0 && type != 1 && type != 2 && type != 4) {
+                        sharedMediaData[type].setTotalCount(loadIndex, (Integer) args[1]);
                     }
+                    sharedMediaData[type].setEndReached(loadIndex, (Boolean) args[5]);
                     for (int a = 0; a < arr.size(); a++) {
                         MessageObject message = arr.get(a);
                         sharedMediaData[type].addMessage(message, loadIndex, false, enc);
@@ -1207,6 +1257,10 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
             }
         }
 
+        public long getMergeDialogId() {
+            return mergeDialogId;
+        }
+
         public boolean isMediaWasLoaded() {
             return mediaWasLoaded;
         }
@@ -1350,7 +1404,7 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
         public ArrayList<String> sections = new ArrayList<>();
         public HashMap<String, ArrayList<MessageObject>> sectionArrays = new HashMap<>();
         public ArrayList<Period> fastScrollPeriods = new ArrayList<>();
-        public int totalCount;
+        public int[] totalCount = new int[]{0, 0};
         public boolean loading;
         public boolean fastScrollDataLoaded;
         public boolean[] endReached = new boolean[]{false, true};
@@ -1373,7 +1427,15 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
         RecyclerView.RecycledViewPool recycledViewPool = new RecyclerView.RecycledViewPool();
 
         public void setTotalCount(int count) {
-            totalCount = count;
+            totalCount[0] = count;
+        }
+
+        public void setTotalCount(int num, int count) {
+            totalCount[num] = count;
+        }
+
+        public int getTotalCount() {
+            return totalCount[0] + totalCount[1];
         }
 
         public void setMaxId(int num, int value) {
@@ -1440,20 +1502,20 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                 sectionArrays.remove(messageObject.monthKey);
                 sections.remove(messageObject.monthKey);
             }
-            totalCount--;
-            if (totalCount < 0) {
-                totalCount = 0;
+            totalCount[loadIndex]--;
+            if (totalCount[loadIndex] < 0) {
+                totalCount[loadIndex] = 0;
             }
             return messageObject;
         }
 
-        public void replaceMid(int oldMid, int newMid) {
-            MessageObject obj = messagesDict[0].get(oldMid);
+        public void replaceMid(int loadIndex, int oldMid, int newMid) {
+            MessageObject obj = messagesDict[loadIndex].get(oldMid);
             if (obj != null) {
-                messagesDict[0].remove(oldMid);
-                messagesDict[0].put(newMid, obj);
+                messagesDict[loadIndex].remove(oldMid);
+                messagesDict[loadIndex].put(newMid, obj);
                 obj.messageOwner.id = newMid;
-                max_id[0] = Math.min(newMid, max_id[0]);
+                max_id[loadIndex] = Math.min(newMid, max_id[loadIndex]);
             }
         }
 
@@ -1501,7 +1563,9 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
     private SharedMediaData[] sharedMediaData = new SharedMediaData[9];
     private SharedMediaPreloader sharedMediaPreloader;
 
-    private final static int forward = 100;
+    private final static int forward = ForwardItem.ID_FORWARD;
+    private final static int forward_noquote = ForwardItem.ID_FORWARD_NOQUOTE;
+    private final static int forward_nocaption = ForwardItem.ID_FORWARD_NOCAPTION;
     private final static int delete = 101;
     private final static int gotochat = 102;
     private final static int pin = 103;
@@ -1537,6 +1601,8 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
     public SharedMediaLayout(Context context, long did, SharedMediaPreloader preloader, int commonGroupsCount, ArrayList<Integer> sortedUsers, TLRPC.ChatFull chatInfo, TLRPC.UserFull userInfo, int initialTab, int initialStoryAlbumId, BaseFragment parent, Delegate delegate, int viewType, Theme.ResourcesProvider resourcesProvider) {
         this(context, did, preloader, commonGroupsCount, sortedUsers, chatInfo, userInfo, initialTab, initialStoryAlbumId, parent, delegate, viewType, resourcesProvider, null);
     }
+
+    private final NotificationCenter.ObserversGroup observersGroup;
 
     public SharedMediaLayout(Context context, long did, SharedMediaPreloader preloader, int commonGroupsCount, ArrayList<Integer> sortedUsers, TLRPC.ChatFull chatInfo, TLRPC.UserFull userInfo, int initialTab, int initialStoryAlbumId, BaseFragment parent, Delegate delegate, int viewType, Theme.ResourcesProvider resourcesProvider, BlurredBackgroundDrawableViewFactory iBlur3FactoryLiquidGlass) {
         super(context);
@@ -1613,8 +1679,9 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
         for (int a = 0; a < sharedMediaData.length; a++) {
             sharedMediaData[a] = new SharedMediaData();
             sharedMediaData[a].max_id[0] = DialogObject.isEncryptedDialog(dialog_id) ? Integer.MIN_VALUE : Integer.MAX_VALUE;
+            sharedMediaData[a].max_id[1] = Integer.MAX_VALUE;
             fillMediaData(a);
-            if (mergeDialogId != 0 && info != null) {
+            if (mergeDialogId != 0 && info != null && sharedMediaData[a].messagesDict[1].size() == 0) {
                 sharedMediaData[a].max_id[1] = info.migrated_from_max_id;
                 sharedMediaData[a].endReached[1] = false;
             }
@@ -1625,21 +1692,22 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
         mediaColumnsCount[0] = overrideColumnsCount() <= 0 ? SharedConfig.mediaColumnsCount : overrideColumnsCount();
         mediaColumnsCount[1] = overrideColumnsCount() <= 0 ? SharedConfig.storiesColumnsCount : overrideColumnsCount();
 
-        profileActivity.getNotificationCenter().addObserver(this, NotificationCenter.mediaDidLoad);
-        profileActivity.getNotificationCenter().addObserver(this, NotificationCenter.messagesDeleted);
-        profileActivity.getNotificationCenter().addObserver(this, NotificationCenter.didReceiveNewMessages);
-        profileActivity.getNotificationCenter().addObserver(this, NotificationCenter.messageReceivedByServer);
-        profileActivity.getNotificationCenter().addObserver(this, NotificationCenter.messagePlayingDidReset);
-        profileActivity.getNotificationCenter().addObserver(this, NotificationCenter.messagePlayingPlayStateChanged);
-        profileActivity.getNotificationCenter().addObserver(this, NotificationCenter.messagePlayingDidStart);
-        profileActivity.getNotificationCenter().addObserver(this, NotificationCenter.storiesListUpdated);
-        profileActivity.getNotificationCenter().addObserver(this, NotificationCenter.storiesUpdated);
-        profileActivity.getNotificationCenter().addObserver(this, NotificationCenter.channelRecommendationsLoaded);
-        profileActivity.getNotificationCenter().addObserver(this, NotificationCenter.savedMessagesDialogsUpdate);
-        profileActivity.getNotificationCenter().addObserver(this, NotificationCenter.dialogsNeedReload);
-        profileActivity.getNotificationCenter().addObserver(this, NotificationCenter.starUserGiftsLoaded);
-        profileActivity.getNotificationCenter().addObserver(this, NotificationCenter.updatedChatRanks);
-        profileActivity.getNotificationCenter().addObserver(this, NotificationCenter.didUpdatePollResults);
+        observersGroup = profileActivity.getNotificationCenter().createObserversGroup(this)
+            .add(NotificationCenter.mediaDidLoad)
+            .add(NotificationCenter.messagesDeleted)
+            .add(NotificationCenter.didReceiveNewMessages)
+            .add(NotificationCenter.messageReceivedByServer)
+            .add(NotificationCenter.messagePlayingDidReset)
+            .add(NotificationCenter.messagePlayingPlayStateChanged)
+            .add(NotificationCenter.messagePlayingDidStart)
+            .add(NotificationCenter.storiesListUpdated)
+            .add(NotificationCenter.storiesUpdated)
+            .add(NotificationCenter.channelRecommendationsLoaded)
+            .add(NotificationCenter.savedMessagesDialogsUpdate)
+            .add(NotificationCenter.dialogsNeedReload)
+            .add(NotificationCenter.starUserGiftsLoaded)
+            .add(NotificationCenter.updatedChatRanks)
+            .add(NotificationCenter.didUpdatePollResults);
 
         for (int a = 0; a < 10; a++) {
             //cellCache.add(new SharedPhotoVideoCell(context));
@@ -2180,16 +2248,18 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
         actionModeLayout.addView(selectedMessagesCountTextView, LayoutHelper.createLinear(0, LayoutHelper.MATCH_PARENT, 1.0f, 18, 0, 0, 0));
         actionModeViews.add(selectedMessagesCountTextView);
 
+        if (!isStoriesView()) {
+            gotoItem = new ActionBarMenuItem(context, null, getThemedColor(Theme.key_actionBarActionModeDefaultSelector), getThemedColor(Theme.key_actionBarActionModeDefaultIcon), false);
+            gotoItem.setIcon(R.drawable.msg_message);
+            gotoItem.setContentDescription(getString(R.string.AccDescrGoToMessage));
+            gotoItem.setDuplicateParentStateEnabled(false);
+            actionModeLayout.addView(gotoItem, new LinearLayout.LayoutParams(dp(54), ViewGroup.LayoutParams.MATCH_PARENT));
+            actionModeViews.add(gotoItem);
+            gotoItem.setOnClickListener(v -> onActionBarItemClick(v, gotochat));
+        }
+
         if (!DialogObject.isEncryptedDialog(dialog_id)) {
             if (!isStoriesView()) {
-                gotoItem = new ActionBarMenuItem(context, null, getThemedColor(Theme.key_actionBarActionModeDefaultSelector), getThemedColor(Theme.key_actionBarActionModeDefaultIcon), false);
-                gotoItem.setIcon(R.drawable.msg_message);
-                gotoItem.setContentDescription(getString(R.string.AccDescrGoToMessage));
-                gotoItem.setDuplicateParentStateEnabled(false);
-                actionModeLayout.addView(gotoItem, new LinearLayout.LayoutParams(dp(54), ViewGroup.LayoutParams.MATCH_PARENT));
-                actionModeViews.add(gotoItem);
-                gotoItem.setOnClickListener(v -> onActionBarItemClick(v, gotochat));
-
                 forwardItem = new ActionBarMenuItem(context, null, getThemedColor(Theme.key_actionBarActionModeDefaultSelector), getThemedColor(Theme.key_actionBarActionModeDefaultIcon), false);
                 forwardItem.setIcon(R.drawable.msg_forward);
                 forwardItem.setContentDescription(getString(R.string.Forward));
@@ -2197,6 +2267,18 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                 actionModeLayout.addView(forwardItem, new LinearLayout.LayoutParams(dp(54), ViewGroup.LayoutParams.MATCH_PARENT));
                 actionModeViews.add(forwardItem);
                 forwardItem.setOnClickListener(v -> onActionBarItemClick(v, forward));
+                forwardItem.setDelegate(id -> onActionBarItemClick(forwardItem, id));
+
+                if (NekoConfig.showNoQuoteForward) {
+                    forwardNoQuoteItem = new ActionBarMenuItem(context, null, getThemedColor(Theme.key_actionBarActionModeDefaultSelector), getThemedColor(Theme.key_actionBarActionModeDefaultIcon), false);
+                    forwardNoQuoteItem.setIcon(R.drawable.msg_forward);
+                    forwardNoQuoteItem.setContentDescription(LocaleController.getString(R.string.NoQuoteForward));
+                    forwardNoQuoteItem.setDuplicateParentStateEnabled(false);
+                    actionModeLayout.addView(forwardNoQuoteItem, new LinearLayout.LayoutParams(AndroidUtilities.dp(54), ViewGroup.LayoutParams.MATCH_PARENT));
+                    actionModeViews.add(forwardNoQuoteItem);
+                    forwardNoQuoteItem.setOnClickListener(v -> onActionBarItemClick(v, forward_noquote));
+                    forwardNoQuoteItem.setIcon(new ForwardDrawable(ForwardItem.ID_FORWARD_NOQUOTE, false));
+                }
             }
 
             pinItem = new ActionBarMenuItem(context, null, getThemedColor(Theme.key_actionBarActionModeDefaultSelector), getThemedColor(Theme.key_actionBarActionModeDefaultIcon), false);
@@ -3005,6 +3087,47 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                         pollAdapter.onScrolled(this);
                     }
                 }
+
+                @Override
+                public boolean performAccessibilityAction(int action, Bundle args) {
+                    try {
+                        if (action == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) {
+                            View outer = findOuterScrollingAncestor();
+                            if (outer != null && outer.canScrollVertically(1)) {
+                                if (outer.performAccessibilityAction(action, args)) {
+                                    return true;
+                                }
+                            }
+                        } else if (action == AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD) {
+                            if (!canScrollVertically(-1)) {
+                                View outer = findOuterScrollingAncestor();
+                                if (outer != null && outer.canScrollVertically(-1)) {
+                                    if (outer.performAccessibilityAction(action, args)) {
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                    } catch (Exception e) {
+                        FileLog.e(e);
+                    }
+                    return super.performAccessibilityAction(action, args);
+                }
+
+                private View findOuterScrollingAncestor() {
+                    try {
+                        Object p = getParent();
+                        while (p instanceof View) {
+                            if (p != this && p instanceof RecyclerView) {
+                                return (View) p;
+                            }
+                            p = ((View) p).getParent();
+                        }
+                    } catch (Exception e) {
+                        FileLog.e(e);
+                    }
+                    return null;
+                }
             };
             mediaPages[a].listView.setFastScrollEnabled(RecyclerListView.FastScroll.DATE_TYPE);
             mediaPages[a].listView.setScrollingTouchSlop(RecyclerView.TOUCH_SLOP_PAGING);
@@ -3097,10 +3220,10 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                         } else {
                             i = position;
                         }
-                        participant = chatUsersAdapter.chatInfo.participants.participants.get(i);
                         if (i < 0 || i >= chatUsersAdapter.chatInfo.participants.participants.size()) {
                             return;
                         }
+                        participant = chatUsersAdapter.chatInfo.participants.participants.get(i);
                         onMemberClick(participant, false, view);
                     } else if (mediaPage.listView.getAdapter() == groupUsersSearchAdapter) {
                         long user_id;
@@ -3668,7 +3791,7 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
             } else {
                 addView(scrollSlidingTextTabStrip, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 48, Gravity.LEFT | Gravity.TOP));
             }
-            searchTagsList = new SearchTagsList(getContext(), profileActivity, null, profileActivity.getCurrentAccount(), includeSavedDialogs() ? 0 : dialog_id, resourcesProvider, false) {
+            searchTagsList = new SearchTagsList(getContext(), profileActivity, profileActivity.getCurrentAccount(), includeSavedDialogs() ? 0 : dialog_id, resourcesProvider) {
                 @Override
                 protected boolean setFilter(ReactionsLayoutInBubble.VisibleReaction reaction) {
                     if (searchItem == null) return false;
@@ -3711,8 +3834,7 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                 }
             };
             searchTagsList.setShown(0f);
-            searchTagsList.attach();
-            addView(searchTagsList, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 40, Gravity.LEFT | Gravity.TOP, 0, 4, 0, 0));
+            addView(searchTagsList, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 38, Gravity.LEFT | Gravity.TOP, 0, 4, 0, 0));
             addView(actionModeLayout, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 48, Gravity.LEFT | Gravity.TOP));
         }
 
@@ -3817,11 +3939,15 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
         }
         boolean noforwards = profileActivity.getMessagesController().isPeerNoForwards(dialog_id) || hasNoforwardsMessage();
         forwardItem.setAlpha(noforwards ? 0.5f : 1f);
+        if (forwardNoQuoteItem != null) forwardNoQuoteItem.setAlpha(noforwards ? 0.5f : 1f);
         if (noforwards && forwardItem.getBackground() != null) {
             forwardItem.setBackground(null);
+            if (forwardNoQuoteItem != null) forwardNoQuoteItem.setBackground(null);
         } else if (!noforwards && forwardItem.getBackground() == null) {
             forwardItem.setBackground(Theme.createSelectorDrawable(getThemedColor(Theme.key_actionBarActionModeDefaultSelector), 5));
+            if (forwardNoQuoteItem != null) forwardNoQuoteItem.setBackground(Theme.createSelectorDrawable(getThemedColor(Theme.key_actionBarActionModeDefaultSelector), 5));
         }
+        ForwardItem.setupForwardItem(forwardItem, ForwardItem.hasCaption(getForwardingMessages()), resourcesProvider, id -> onActionBarItemClick(forwardItem, id));
     }
     private boolean hasNoforwardsMessage() {
         boolean hasNoforwardsMessage = false;
@@ -3881,14 +4007,15 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
             }
         }
 
-        int[] counts = sharedMediaPreloader.getLastMediaCount();
-        ArrayList<MessageObject> messages = sharedMediaPreloader.getSharedMediaData()[0].messages;
+        final int[] counts = sharedMediaPreloader.getLastMediaCount();
+        final ArrayList<MessageObject> messages = sharedMediaPreloader.getSharedMediaData()[0].messages;
+        sharedMediaData[0].setTotalCount(1, 0);
         if (sharedMediaData[0].filterType == FILTER_PHOTOS_AND_VIDEOS) {
-            sharedMediaData[0].setTotalCount(counts[0]);
+            sharedMediaData[0].setTotalCount(0, counts[0]);
         } else if (sharedMediaData[0].filterType == FILTER_PHOTOS_ONLY) {
-            sharedMediaData[0].setTotalCount(counts[6]);
+            sharedMediaData[0].setTotalCount(0, counts[6]);
         } else {
-            sharedMediaData[0].setTotalCount(counts[7]);
+            sharedMediaData[0].setTotalCount(0, counts[7]);
         }
         sharedMediaData[0].fastScrollDataLoaded = false;
         jumpToDate(0, DialogObject.isEncryptedDialog(dialog_id) ? Integer.MIN_VALUE : Integer.MAX_VALUE, 0, true);
@@ -4575,10 +4702,12 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
         }
         if (type == 0) {
             if (!sharedMediaData[type].fastScrollDataLoaded) {
-                sharedMediaData[type].totalCount = mediaData[type].totalCount;
+                sharedMediaData[type].totalCount[0] = mediaData[type].totalCount[0];
+                sharedMediaData[type].totalCount[1] = mediaData[type].totalCount[1];
             }
         } else {
-            sharedMediaData[type].totalCount = mediaData[type].totalCount;
+            sharedMediaData[type].totalCount[0] = mediaData[type].totalCount[0];
+            sharedMediaData[type].totalCount[1] = mediaData[type].totalCount[1];
         }
         sharedMediaData[type].messages.addAll(mediaData[type].messages);
 
@@ -4937,24 +5066,7 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
     }
 
     public void onDestroy() {
-        profileActivity.getNotificationCenter().removeObserver(this, NotificationCenter.mediaDidLoad);
-        profileActivity.getNotificationCenter().removeObserver(this, NotificationCenter.didReceiveNewMessages);
-        profileActivity.getNotificationCenter().removeObserver(this, NotificationCenter.messagesDeleted);
-        profileActivity.getNotificationCenter().removeObserver(this, NotificationCenter.messageReceivedByServer);
-        profileActivity.getNotificationCenter().removeObserver(this, NotificationCenter.messagePlayingDidReset);
-        profileActivity.getNotificationCenter().removeObserver(this, NotificationCenter.messagePlayingPlayStateChanged);
-        profileActivity.getNotificationCenter().removeObserver(this, NotificationCenter.messagePlayingDidStart);
-        profileActivity.getNotificationCenter().removeObserver(this, NotificationCenter.storiesListUpdated);
-        profileActivity.getNotificationCenter().removeObserver(this, NotificationCenter.storiesUpdated);
-        profileActivity.getNotificationCenter().removeObserver(this, NotificationCenter.channelRecommendationsLoaded);
-        profileActivity.getNotificationCenter().removeObserver(this, NotificationCenter.savedMessagesDialogsUpdate);
-        profileActivity.getNotificationCenter().removeObserver(this, NotificationCenter.dialogsNeedReload);
-        profileActivity.getNotificationCenter().removeObserver(this, NotificationCenter.starUserGiftsLoaded);
-        profileActivity.getNotificationCenter().removeObserver(this, NotificationCenter.updatedChatRanks);
-        profileActivity.getNotificationCenter().removeObserver(this, NotificationCenter.didUpdatePollResults);
-        if (searchTagsList != null) {
-            searchTagsList.detach();
-        }
+        observersGroup.removeAllObservers();
 
         if (storiesAdapter != null && storiesAdapter.storiesList != null) {
             storiesAdapter.destroy();
@@ -5052,7 +5164,7 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                     }
                 }
                 Collections.sort(sharedMediaData[type].fastScrollPeriods, (period, period2) -> period2.date - period.date);
-                sharedMediaData[type].setTotalCount(res.count);
+                sharedMediaData[type].setTotalCount(0, res.count);
                 sharedMediaData[type].fastScrollDataLoaded = true;
                 if (!sharedMediaData[type].fastScrollPeriods.isEmpty()) {
                     for (int i = 0; i < mediaPages.length; i++) {
@@ -5071,7 +5183,7 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
 
     private static void showFastScrollHint(MediaPage mediaPage, SharedMediaData[] sharedMediaData, boolean show) {
         if (show) {
-            if (SharedConfig.fastScrollHintCount <= 0 || mediaPage.fastScrollHintView != null || mediaPage.fastScrollHinWasShown || mediaPage.listView.getFastScroll() == null || !mediaPage.listView.getFastScroll().isVisible || mediaPage.listView.getFastScroll().getVisibility() != View.VISIBLE || sharedMediaData[0].totalCount < 50) {
+            if (SharedConfig.fastScrollHintCount <= 0 || mediaPage.fastScrollHintView != null || mediaPage.fastScrollHinWasShown || mediaPage.listView.getFastScroll() == null || !mediaPage.listView.getFastScroll().isVisible || mediaPage.listView.getFastScroll().getVisibility() != View.VISIBLE || sharedMediaData[0].getTotalCount() < 50) {
                 return;
             }
             SharedConfig.setFastScrollHintCount(SharedConfig.fastScrollHintCount - 1);
@@ -5236,7 +5348,7 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                 actionBar.closeSearchField();
                 cantDeleteMessagesCount = 0;
             }, null, resourcesProvider);
-        } else if (id == forward) {
+        } else if (id == forward || id == forward_noquote || id == forward_nocaption) {
             if (userInfo != null) {
                 if (profileActivity.getMessagesController().isUserNoForwards(userInfo)) {
                     if (fwdRestrictedHint != null) {
@@ -5264,25 +5376,30 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                 }
                 return;
             }
+            ForwardItem.setLastForwardOption(id);
+            setForwardParams(id == forward_noquote, id == forward_nocaption);
+            if (NekoConfig.quickForward) {
+                openShareAlert(profileActivity, null, () -> {
+                    for (int a = 1; a >= 0; a--) {
+                        selectedFiles[a].clear();
+                    }
+                    cantDeleteMessagesCount = 0;
+                    showActionMode(false);
+                    updateRowsSelection(true);
+                });
+                return;
+            }
 
             Bundle args = new Bundle();
             args.putBoolean("onlySelect", true);
             args.putBoolean("canSelectTopics", true);
             args.putInt("dialogsType", DialogsActivity.DIALOGS_TYPE_FORWARD);
             DialogsActivity fragment = new DialogsActivity(args);
+            fragment.forwardContext = this;
+            var forwardParams = getForwardParams();
+            ArrayList<MessageObject> fmessages = getForwardingMessages();
             fragment.setDelegate((fragment1, dids, message, param, notify, scheduleDate, scheduleRepeatPeriod, topicsFragment) -> {
-                ArrayList<MessageObject> fmessages = new ArrayList<>();
                 for (int a = 1; a >= 0; a--) {
-                    ArrayList<Integer> ids = new ArrayList<>();
-                    for (int b = 0; b < selectedFiles[a].size(); b++) {
-                        ids.add(selectedFiles[a].keyAt(b));
-                    }
-                    Collections.sort(ids);
-                    for (Integer id1 : ids) {
-                        if (id1 > 0) {
-                            fmessages.add(selectedFiles[a].get(id1));
-                        }
-                    }
                     selectedFiles[a].clear();
                 }
                 cantDeleteMessagesCount = 0;
@@ -5296,9 +5413,9 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                     for (int a = 0; a < dids.size(); a++) {
                         long did = dids.get(a).dialogId;
                         if (message != null) {
-                            profileActivity.getSendMessagesHelper().sendMessage(SendMessagesHelper.SendMessageParams.of(message.toString(), did, null, null, null, true, null, null, null, true, 0, 0, null, false));
+                            profileActivity.getSendMessagesHelper().sendMessage(SendMessagesHelper.SendMessageParams.of(message.toString(), did, null, null, null, true, null, null, null, forwardParams.notify, forwardParams.scheduleDate, 0, null, false));
                         }
-                        profileActivity.getSendMessagesHelper().sendMessage(fmessages, did, false, false, true, 0, 0);
+                        profileActivity.getSendMessagesHelper().sendMessage(fmessages, did, forwardParams.noQuote, forwardParams.noCaption, forwardParams.notify, forwardParams.scheduleDate, 0);
                     }
                     fragment1.finishFragment();
                     UndoView undoView = null;
@@ -5315,6 +5432,8 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                 } else {
                     long did = dids.get(0).dialogId;
                     Bundle args1 = new Bundle();
+                    args1.putBoolean("forward_noquote", forwardParams.noQuote);
+                    args1.putBoolean("forward_nocaption", forwardParams.noCaption);
                     args1.putBoolean("scrollToTopOnResume", true);
                     if (DialogObject.isEncryptedDialog(did)) {
                         args1.putInt("enc_id", DialogObject.getEncryptedChatId(did));
@@ -6050,13 +6169,13 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
             }
 
             if (guid == profileActivity.getClassGuid() && requestIndex == sharedMediaData[type].requestIndex) {
-                if (type != 0 && type != 1 && type != 2 && type != 4) {
-                    sharedMediaData[type].totalCount = (Integer) args[1];
-                }
                 ArrayList<MessageObject> arr = (ArrayList<MessageObject>) args[2];
 
                 boolean enc = DialogObject.isEncryptedDialog(dialog_id);
                 int loadIndex = uid == dialog_id ? 0 : 1;
+                if (type != 0 && type != 1 && type != 2 && type != 4) {
+                    sharedMediaData[type].setTotalCount(loadIndex, (Integer) args[1]);
+                }
 
                 RecyclerListView.Adapter adapter = null;
                 if (type == 0) {
@@ -6122,7 +6241,11 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                     }
                     sharedMediaData[type].endReached[loadIndex] = (Boolean) args[5];
                     if (sharedMediaData[type].endReached[loadIndex]) {
-                        sharedMediaData[type].totalCount = sharedMediaData[type].messages.size() + sharedMediaData[type].startOffset;
+                        int localCount = sharedMediaData[type].messagesDict[loadIndex].size();
+                        if (loadIndex == 0) {
+                            localCount += sharedMediaData[type].startOffset;
+                        }
+                        sharedMediaData[type].setTotalCount(loadIndex, localCount);
                     }
                 }
                 if (!fromStart && loadIndex == 0 && sharedMediaData[type].endReached[loadIndex] && mergeDialogId != 0) {
@@ -6336,8 +6459,12 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
             }
             Integer msgId = (Integer) args[0];
             Integer newMsgId = (Integer) args[1];
-            for (int a = 0; a < sharedMediaData.length; a++) {
-                sharedMediaData[a].replaceMid(msgId, newMsgId);
+            Long did = (Long) args[3];
+            if (did == dialog_id || did == mergeDialogId) {
+                final int loadIndex = did == dialog_id ? 0 : 1;
+                for (int a = 0; a < sharedMediaData.length; a++) {
+                    sharedMediaData[a].replaceMid(loadIndex, msgId, newMsgId);
+                }
             }
         } else if (id == NotificationCenter.messagePlayingDidStart || id == NotificationCenter.messagePlayingPlayStateChanged || id == NotificationCenter.messagePlayingDidReset) {
             if (id == NotificationCenter.messagePlayingDidReset || id == NotificationCenter.messagePlayingPlayStateChanged) {
@@ -6666,8 +6793,10 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
         if (info != null && info.migrated_from_chat_id != 0 && mergeDialogId == 0) {
             mergeDialogId = -info.migrated_from_chat_id;
             for (int a = 0; a < sharedMediaData.length; a++) {
-                sharedMediaData[a].max_id[1] = info.migrated_from_max_id;
-                sharedMediaData[a].endReached[1] = false;
+                if (sharedMediaData[a].messagesDict[1].size() == 0) {
+                    sharedMediaData[a].max_id[1] = info.migrated_from_max_id;
+                    sharedMediaData[a].endReached[1] = false;
+                }
             }
         }
         if (info != null && (stories_pinned_available != info.stories_pinned_available)) {
@@ -8071,7 +8200,7 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
         @Override
         public int getItemCount() {
             if (sharedMediaData[currentType].loadingAfterFastScroll) {
-                return sharedMediaData[currentType].totalCount;
+                return sharedMediaData[currentType].getTotalCount();
             }
             if (sharedMediaData[currentType].messages.size() == 0 && !sharedMediaData[currentType].loading) {
                 return 1;
@@ -8079,7 +8208,7 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
             if (sharedMediaData[currentType].messages.size() == 0 && (!sharedMediaData[currentType].endReached[0] || !sharedMediaData[currentType].endReached[1]) && sharedMediaData[currentType].startReached) {
                 return 0;
             }
-            if (sharedMediaData[currentType].totalCount == 0) {
+            if (sharedMediaData[currentType].getTotalCount() == 0) {
                 int count = sharedMediaData[currentType].getStartOffset() + sharedMediaData[currentType].getMessages().size();
                 if (count != 0 && (!sharedMediaData[currentType].endReached[0] || !sharedMediaData[currentType].endReached[1])) {
                     if (sharedMediaData[currentType].getEndLoadingStubs() != 0) {
@@ -8090,7 +8219,7 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                 }
                 return count;
             } else {
-                return sharedMediaData[currentType].totalCount;
+                return Math.max(sharedMediaData[currentType].getTotalCount(), sharedMediaData[currentType].getStartOffset() + sharedMediaData[currentType].getMessages().size());
             }
         }
 
@@ -8259,7 +8388,7 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
 
         @Override
         public int getTotalItemsCount() {
-            return sharedMediaData[currentType].totalCount;
+            return sharedMediaData[currentType].getTotalCount();
         }
     }
 
@@ -8421,7 +8550,7 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                 return count;
             }
             if (sharedMediaData[0].loadingAfterFastScroll) {
-                return sharedMediaData[0].totalCount;
+                return sharedMediaData[0].getTotalCount();
             }
             if (sharedMediaData[0].messages.size() == 0 && !sharedMediaData[0].loading) {
                 return 1;
@@ -8429,7 +8558,7 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
             if (sharedMediaData[0].messages.size() == 0 && (!sharedMediaData[0].endReached[0] || !sharedMediaData[0].endReached[1]) && sharedMediaData[0].startReached) {
                 return 0;
             }
-            if (sharedMediaData[0].totalCount == 0) {
+            if (sharedMediaData[0].getTotalCount() == 0) {
                 int count = sharedMediaData[0].getStartOffset() + sharedMediaData[0].getMessages().size();
                 if (count != 0 && (!sharedMediaData[0].endReached[0] || !sharedMediaData[0].endReached[1])) {
                     if (sharedMediaData[0].getEndLoadingStubs() != 0) {
@@ -8440,7 +8569,7 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                 }
                 return count;
             } else {
-                return sharedMediaData[0].totalCount;
+                return Math.max(sharedMediaData[0].getTotalCount(), sharedMediaData[0].getStartOffset() + sharedMediaData[0].getMessages().size());
             }
         }
 
@@ -8597,7 +8726,7 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
 
         @Override
         public int getTotalItemsCount() {
-            return sharedMediaData[0].totalCount;
+            return sharedMediaData[0].getTotalCount();
         }
 
         @Override
@@ -8676,7 +8805,7 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
         sharedMediaData[type].setEndReached(0, false);
         sharedMediaData[type].startReached = false;
         sharedMediaData[type].startOffset = startOffset;
-        sharedMediaData[type].endLoadingStubs = sharedMediaData[type].totalCount - startOffset - 1;
+        sharedMediaData[type].endLoadingStubs = sharedMediaData[type].getTotalCount() - startOffset - 1;
         if (sharedMediaData[type].endLoadingStubs < 0) {
             sharedMediaData[type].endLoadingStubs = 0;
         }
@@ -8691,7 +8820,7 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
         if (scrollToPosition) {
             for (int i = 0; i < mediaPages.length; i++) {
                 if (mediaPages[i].selectedType == type) {
-                    mediaPages[i].layoutManager.scrollToPositionWithOffset(Math.min(sharedMediaData[type].totalCount - 1, sharedMediaData[type].startOffset), 0);
+                    mediaPages[i].layoutManager.scrollToPositionWithOffset(Math.min(sharedMediaData[type].getTotalCount() - 1, sharedMediaData[type].startOffset), 0);
                 }
             }
         }
@@ -10885,7 +11014,7 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
                 emptyStubView.setLayoutParams(new RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
                 return new RecyclerListView.Holder(emptyStubView);
             }
-            View view = new UserCell(mContext, 9, 0, true, false, resourcesProvider);
+            View view = new UserCell(mContext, 9, 0, true, false, false, resourcesProvider);
             view.setLayoutParams(new RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             return new RecyclerListView.Holder(view);
         }
@@ -11247,6 +11376,10 @@ public class SharedMediaLayout extends FrameLayout implements NotificationCenter
         if (forwardItem != null) {
             arrayList.add(new ThemeDescription(forwardItem.getIconView(), ThemeDescription.FLAG_IMAGECOLOR, null, null, null, null, Theme.key_actionBarActionModeDefaultIcon));
             arrayList.add(new ThemeDescription(forwardItem, ThemeDescription.FLAG_BACKGROUNDFILTER, null, null, null, null, Theme.key_actionBarActionModeDefaultSelector));
+        }
+        if (forwardNoQuoteItem != null) {
+            arrayList.add(new ThemeDescription(forwardNoQuoteItem.getIconView(), ThemeDescription.FLAG_IMAGECOLOR, null, null, null, null, Theme.key_windowBackgroundWhiteGrayText2));
+            arrayList.add(new ThemeDescription(forwardNoQuoteItem, ThemeDescription.FLAG_BACKGROUNDFILTER, null, null, null, null, Theme.key_actionBarActionModeDefaultSelector));
         }
         arrayList.add(new ThemeDescription(closeButton, ThemeDescription.FLAG_IMAGECOLOR, null, null, new Drawable[]{backDrawable}, null, Theme.key_actionBarActionModeDefaultIcon));
         arrayList.add(new ThemeDescription(closeButton, ThemeDescription.FLAG_BACKGROUNDFILTER, null, null, null, null, Theme.key_actionBarActionModeDefaultSelector));

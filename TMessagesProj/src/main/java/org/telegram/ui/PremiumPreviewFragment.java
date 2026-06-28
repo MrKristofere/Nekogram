@@ -74,6 +74,7 @@ import org.telegram.tgnet.TLRPC;
 import org.telegram.tgnet.tl.TL_account;
 import org.telegram.tgnet.tl.TL_stars;
 import org.telegram.ui.ActionBar.ActionBar;
+import org.telegram.ui.ActionBar.BackDrawable;
 import org.telegram.ui.ActionBar.BaseFragment;
 import org.telegram.ui.ActionBar.Theme;
 import org.telegram.ui.ActionBar.ThemeDescription;
@@ -515,7 +516,6 @@ public class PremiumPreviewFragment extends BaseFragment implements Notification
     @Override
     public View createView(Context context) {
         iBlur3Capture = (canvas, position) -> Blur3Utils.captureRelativeParent(listView, canvas, position, listView, contentView);
-        /**/
 
         hasOwnBackground = true;
         strokeShader = new LinearGradient(0, 0, 0, dp(28), new int[] { 0x4dffffff, 0, 0x1affffff }, new float[] { 0, 0.5f, 1 }, Shader.TileMode.CLAMP);
@@ -566,7 +566,7 @@ public class PremiumPreviewFragment extends BaseFragment implements Notification
         shadowDrawable.setColorFilter(new PorterDuffColorFilter(getThemedColor(Theme.key_dialogBackground), PorterDuff.Mode.MULTIPLY));
         shadowDrawable.getPadding(padding);
 
-        statusBarHeight = AndroidUtilities.isTablet() ? 0 : AndroidUtilities.statusBarHeight;
+        statusBarHeight = AndroidUtilities.statusBarHeight;
 
         contentView = new FrameLayout(context) {
 
@@ -611,12 +611,8 @@ public class PremiumPreviewFragment extends BaseFragment implements Notification
 
             @Override
             protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-                if (MeasureSpec.getSize(widthMeasureSpec) > MeasureSpec.getSize(heightMeasureSpec)) {
-                    isLandscapeMode = true;
-                } else {
-                    isLandscapeMode = false;
-                }
-                statusBarHeight = AndroidUtilities.isTablet() ? 0 : AndroidUtilities.statusBarHeight;
+                isLandscapeMode = MeasureSpec.getSize(widthMeasureSpec) > MeasureSpec.getSize(heightMeasureSpec);
+                statusBarHeight = AndroidUtilities.statusBarHeight;
                 backgroundView.measure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
                 particlesView.getLayoutParams().height = backgroundView.getMeasuredHeight();
                 if (buttonContainer != null) {
@@ -957,7 +953,11 @@ public class PremiumPreviewFragment extends BaseFragment implements Notification
         fragmentView = contentView;
         actionBar.setBackground(null);
         actionBar.setCastShadows(false);
-        actionBar.setBackButtonImage(R.drawable.ic_ab_back);
+        if (parentLayout != null && parentLayout.isRightLayout()) {
+            actionBar.setBackButtonImage(R.drawable.ic_ab_close);
+        } else {
+            actionBar.setBackButtonImage(R.drawable.ic_ab_back);
+        }
         actionBar.setAddToContainer(false);
         actionBar.setActionBarMenuOnItemClick(new ActionBar.ActionBarMenuOnItemClick() {
             @Override
@@ -1010,9 +1010,9 @@ public class PremiumPreviewFragment extends BaseFragment implements Notification
         premiumFeatures.add(new PremiumFeatureData(PREMIUM_FEATURE_MESSAGE_PRIVACY, R.drawable.filled_messages_paid, getString(R.string.PremiumPreviewPaidMessages), getString(R.string.PremiumPreviewPaidMessagesDescription)));
         premiumFeatures.add(new PremiumFeatureData(PREMIUM_FEATURE_ANIMATED_AVATARS, R.drawable.msg_premium_avatar, getString(R.string.PremiumPreviewAnimatedProfiles), getString(R.string.PremiumPreviewAnimatedProfilesDescription)));
         premiumFeatures.add(new PremiumFeatureData(PREMIUM_FEATURE_SAVED_TAGS, R.drawable.premium_tags, getString(R.string.PremiumPreviewTags2), getString(R.string.PremiumPreviewTagsDescription2)));
-        premiumFeatures.add(new PremiumFeatureData(PREMIUM_FEATURE_APPLICATION_ICONS, R.drawable.msg_premium_icons, getString(R.string.PremiumPreviewAppIcon), getString(R.string.PremiumPreviewAppIconDescription)));
+        //premiumFeatures.add(new PremiumFeatureData(PREMIUM_FEATURE_APPLICATION_ICONS, R.drawable.msg_premium_icons, getString(R.string.PremiumPreviewAppIcon), getString(R.string.PremiumPreviewAppIconDescription)));
         premiumFeatures.add(new PremiumFeatureData(PREMIUM_FEATURE_EMOJI_STATUS, R.drawable.premium_status, getString(R.string.PremiumPreviewEmojiStatus), getString(R.string.PremiumPreviewEmojiStatusDescription)));
-        premiumFeatures.add(new PremiumFeatureData(PREMIUM_FEATURE_TRANSLATIONS, R.drawable.msg_premium_translate, getString(R.string.PremiumPreviewTranslations), getString(R.string.PremiumPreviewTranslationsDescription)));
+        //premiumFeatures.add(new PremiumFeatureData(PREMIUM_FEATURE_TRANSLATIONS, R.drawable.msg_premium_translate, getString(R.string.PremiumPreviewTranslations), getString(R.string.PremiumPreviewTranslationsDescription)));
         premiumFeatures.add(new PremiumFeatureData(PREMIUM_FEATURE_WALLPAPER, R.drawable.premium_wallpaper, getString(R.string.PremiumPreviewWallpaper), getString(R.string.PremiumPreviewWallpaperDescription)));
         premiumFeatures.add(new PremiumFeatureData(PREMIUM_FEATURE_NAME_COLOR, R.drawable.premium_colors, getString(R.string.PremiumPreviewProfileColor), getString(R.string.PremiumPreviewProfileColorDescription)));
         premiumFeatures.add(new PremiumFeatureData(PREMIUM_FEATURE_LAST_SEEN, R.drawable.menu_premium_seen, getString(R.string.PremiumPreviewLastSeen), getString(R.string.PremiumPreviewLastSeenDescription)));
@@ -1160,9 +1160,9 @@ public class PremiumPreviewFragment extends BaseFragment implements Notification
                     final MessagesController messagesController = MessagesController.getInstance(account);
                     if (!TextUtils.isEmpty(messagesController.premiumBotUsername)) {
                         launchActivity.setNavigateToPremiumBot(true);
-                        launchActivity.onNewIntent(new Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/" + messagesController.premiumBotUsername + "?start=" + source)), (Browser.Progress) null);
+                        launchActivity.onNewIntent(new Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/" + messagesController.premiumBotUsername + "?start=" + source)).putExtra("internal", true), (Browser.Progress) null);
                     } else if (!TextUtils.isEmpty(messagesController.premiumInvoiceSlug)) {
-                        launchActivity.onNewIntent(new Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/$" + messagesController.premiumInvoiceSlug)), (Browser.Progress) null);
+                        launchActivity.onNewIntent(new Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/$" + messagesController.premiumInvoiceSlug)).putExtra("internal", true), (Browser.Progress) null);
                     }
                 } else {
                     final Uri uri = Uri.parse(selectedTier.subscriptionOption.bot_url);
@@ -2203,8 +2203,8 @@ public class PremiumPreviewFragment extends BaseFragment implements Notification
         if (backgroundView == null || actionBar == null) {
             return;
         }
-        actionBar.setItemsColor(Theme.getColor(whiteBackground ? Theme.key_windowBackgroundWhiteBlackText : Theme.key_premiumGradientBackgroundOverlay), false);
         actionBar.setItemsColor(Theme.getColor(whiteBackground ? Theme.key_windowBackgroundWhiteBlackText : Theme.key_premiumGradientBackgroundOverlay), true);
+        actionBar.setItemsColor(Theme.getColor(whiteBackground ? Theme.key_windowBackgroundWhiteBlackText : Theme.key_premiumGradientBackgroundOverlay), false);
         actionBar.setItemsBackgroundColor(ColorUtils.setAlphaComponent(Theme.getColor(Theme.key_premiumGradientBackgroundOverlay), 60), false);
         particlesView.drawable.updateColors();
         if (backgroundView != null) {

@@ -6,6 +6,7 @@ import static org.telegram.messenger.LocaleController.getString;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
+import android.content.res.ColorStateList;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.ColorFilter;
@@ -20,9 +21,11 @@ import android.graphics.RectF;
 import android.graphics.RenderNode;
 import android.graphics.Shader;
 import android.graphics.drawable.Drawable;
+import android.graphics.drawable.RippleDrawable;
 import android.os.Build;
 import android.os.Bundle;
 import android.text.Layout;
+import android.util.StateSet;
 import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
@@ -92,6 +95,7 @@ public class ProfileActionsView extends View {
     public static final int KEY_MESSAGE = 0;
     public static final int KEY_NOTIFICATION = 1;
     public static final int KEY_DISCUSS = 2;
+    public static final int KEY_CHANNEL = 102;
     public static final int KEY_GIFT = 3;
     public static final int KEY_SHARE = 4;
     public static final int KEY_CALL = 5;
@@ -460,6 +464,7 @@ public class ProfileActionsView extends View {
             }
         }
 
+        drawRipple(canvas, action, alpha, isButtonColorLight && parentExpanded < 0.5f);
         canvas.restore();
         drawLoading(canvas, action, alpha);
     }
@@ -509,6 +514,24 @@ public class ProfileActionsView extends View {
         }
     }
 
+    private final ColorStateList rippleColorDark = new ColorStateList(
+            new int[][]{ StateSet.WILD_CARD },
+            new int[]{ Theme.getColor(Theme.key_listSelector) }
+    );
+
+    private final ColorStateList rippleColorLight = new ColorStateList(
+            new int[][]{ StateSet.WILD_CARD },
+            new int[]{ Theme.multAlpha(Theme.getColor(Theme.key_windowBackgroundWhite), 0.45f) }
+    );
+
+    private void drawRipple(Canvas canvas, Action action, float alpha, boolean light) {
+        action.rect.round(AndroidUtilities.rectTmp2);
+        action.rippleDrawable.setColor(light ? rippleColorDark : rippleColorLight);
+        action.rippleDrawable.setBounds(AndroidUtilities.rectTmp2);
+        action.rippleDrawable.setAlpha((int) (0xFF * alpha));
+        action.rippleDrawable.draw(canvas);
+    }
+
     public float getRoundRadius() {
         return dp(16);
     }
@@ -538,6 +561,8 @@ public class ProfileActionsView extends View {
                     downY = y;
                     downTime = System.currentTimeMillis();
                     hit.bounce.setPressed(true);
+                    hit.rippleDrawable.setHotspot(x, y);
+                    hit.rippleDrawable.setState(new int[]{android.R.attr.state_enabled, android.R.attr.state_pressed});
 //                    try {
 //                        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING);
 //                    } catch (Exception ignore) {}
@@ -548,12 +573,14 @@ public class ProfileActionsView extends View {
             if (hit != null) {
                 if (Math.abs(x - downX) > 20 || Math.abs(y - downY) > 20) {
                     hit.bounce.setPressed(false);
+                    hit.rippleDrawable.setState(new int[]{});
                     hit = null;
                 }
             }
         } else if (eventAction == MotionEvent.ACTION_UP || eventAction == MotionEvent.ACTION_CANCEL) {
             if (hit != null) {
                 hit.bounce.setPressed(false);
+                hit.rippleDrawable.setState(new int[]{});
                 if (eventAction == MotionEvent.ACTION_UP && hit.rect.contains(x, y)) {
                     if (System.currentTimeMillis() - downTime > 250) {
                         try {
@@ -589,6 +616,11 @@ public class ProfileActionsView extends View {
 
     @Override
     protected boolean verifyDrawable(@NonNull Drawable who) {
+        for (var action : actions) {
+            if (action.rippleDrawable == who) {
+                return true;
+            }
+        }
         return super.verifyDrawable(who) || who instanceof LoadingDrawable;
     }
 
@@ -604,6 +636,7 @@ public class ProfileActionsView extends View {
     }
 
     public void set(int key, boolean enabled) {
+        if (key == KEY_GIFT) return;
         boolean changed;
         if (enabled) {
             changed = allAvailableActions.add(key);
@@ -731,8 +764,8 @@ public class ProfileActionsView extends View {
                     insertIfNotAvailable(out, KEY_STREAM, KEY_VOICE_CHAT);
                 }
                 insertIfAvailable(out, KEY_NOTIFICATION);
+                insertIfAvailable(out, KEY_DISCUSS);
                 if (!join) {
-                    insertIfAvailable(out, KEY_DISCUSS);
                     insertIfNotAvailable2(out, KEY_GIFT, KEY_DISCUSS, KEY_STORY);
                 }
                 insertIfNotAvailable(out, KEY_SHARE, KEY_STORY);
@@ -751,11 +784,13 @@ public class ProfileActionsView extends View {
                     insertIfAvailable(out, KEY_MESSAGE);
                 }
                 insertIfAvailable(out, KEY_NOTIFICATION);
+                insertIfAvailable(out, KEY_CHANNEL);
                 if (join) {
                     out.add(getOrCreate(KEY_REPORT));
                 } else {
                     insertIfAvailable(out, KEY_VOICE_CHAT);
                     insertIfNotAvailable(out, KEY_STREAM, KEY_VOICE_CHAT);
+                    insertIfAvailable(out, KEY_STORY);
                     insertIfAvailable(out, KEY_LEAVE);
                 }
                 break;
@@ -833,6 +868,9 @@ public class ProfileActionsView extends View {
                 break;
             case KEY_DISCUSS:
                 newAction = new Action(ActionButton.DISCUSS);
+                break;
+            case KEY_CHANNEL:
+                newAction = new Action(ActionButton.CHANNEL);
                 break;
             case KEY_GIFT:
                 newAction = new Action(ActionButton.GIFT);
@@ -1038,6 +1076,7 @@ public class ProfileActionsView extends View {
         int iconTranslationY = 0;
         float iconScale = 1f;
 
+        RippleDrawable rippleDrawable = (RippleDrawable) Theme.AdaptiveRipple.createRect(0, Theme.multAlpha(Theme.getColor(Theme.key_windowBackgroundWhite), 0.45f), 16);
         LoadingDrawable loadingDrawable;
         boolean isLoading;
         boolean supportsLoading;
@@ -1217,6 +1256,7 @@ public class ProfileActionsView extends View {
         NOTIFICATION_MUTE(R.string.ProfileButtonMute, R.drawable.filled_profile_mute_24, R.drawable.outline_profile_mute_24),
         NOTIFICATION_UNMUTE(R.string.ProfileButtonUnmute, R.drawable.filled_profile_unmute_24, R.drawable.outline_profile_unmute_24),
         DISCUSS(R.string.ProfileActionsDiscuss, R.drawable.filled_profile_message_24, R.drawable.outline_profile_message_24),
+        CHANNEL(R.string.ProfileChannel, R.drawable.msg_folders_channels, R.drawable.msg_channel),
         GIFT(R.string.ProfileActionsGift, R.drawable.gift, R.drawable.input_gift_s),
         SHARE(R.string.ProfileActionsShare, R.drawable.action_share, R.drawable.msg_share),
         CALL(R.string.ProfileActionsCall, R.drawable.filled_profile_call_24, R.drawable.outline_profile_call_24),

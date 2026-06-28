@@ -35,11 +35,14 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import tw.nekomimi.nekogram.NekoConfig;
+import tw.nekomimi.nekogram.location.NekoLocationSource;
+
 public class GoogleMapsProvider implements IMapsProvider {
 
     @Override
     public void initializeMaps(Context context) {
-        MapsInitializer.initialize(context);
+        MapsInitializer.initialize(context, MapsInitializer.Renderer.LATEST, null);
     }
 
     @Override
@@ -588,6 +591,7 @@ public class GoogleMapsProvider implements IMapsProvider {
         @Override
         public void getMapAsync(Consumer<IMap> callback) {
             mapView.getMapAsync(googleMap -> {
+                if (NekoConfig.mapDriftingFix) googleMap.setLocationSource(new NekoLocationSource(mapView.getContext()));
                 callback.accept(new GoogleMapImpl(googleMap));
                 findGlSurfaceView(mapView);
             });

@@ -130,7 +130,7 @@ public class ImageUpdater implements NotificationCenter.NotificationCenterDelega
         }
         MessageObject avatarObject = null;
         Bitmap bitmap;
-        if ((photoEntry.isVideo || photoEntry.editedInfo != null) && !photoEntry.isLivePhoto) {
+        if ((photoEntry.isVideo || photoEntry.editedInfo != null) && !photoEntry.isLivePhoto()) {
             TLRPC.TL_message message = new TLRPC.TL_message();
             message.id = 0;
             message.message = "";
@@ -499,8 +499,8 @@ public class ImageUpdater implements NotificationCenter.NotificationCenterDelega
                                 info.thumbPath = photoEntry.thumbPath;
                                 info.coverPath = photoEntry.coverPath;
                                 info.videoEditedInfo = photoEntry.editedInfo;
+                                info.isLivePhoto = photoEntry.isLivePhoto();
                                 info.isVideo = photoEntry.isVideo;
-                                info.isLivePhoto = photoEntry.isLivePhoto;
                                 info.livePhotoVideoOffset = photoEntry.livePhotoVideoOffset;
                                 info.discardLivePhoto = true;
                                 info.caption = photoEntry.caption != null ? photoEntry.caption.toString() : null;
@@ -658,13 +658,13 @@ public class ImageUpdater implements NotificationCenter.NotificationCenterDelega
             Intent takePictureIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
             File image = AndroidUtilities.generatePicturePath();
             if (image != null) {
-                if (Build.VERSION.SDK_INT >= 24) {
+                //if (Build.VERSION.SDK_INT >= 24) {
                     takePictureIntent.putExtra(MediaStore.EXTRA_OUTPUT, FileProvider.getUriForFile(parentFragment.getParentActivity(), ApplicationLoader.getApplicationId() + ".provider", image));
                     takePictureIntent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
                     takePictureIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                } else {
-                    takePictureIntent.putExtra(MediaStore.EXTRA_OUTPUT, Uri.fromFile(image));
-                }
+                //} else {
+                //    takePictureIntent.putExtra(MediaStore.EXTRA_OUTPUT, Uri.fromFile(image));
+                //}
                 currentPicturePath = image.getAbsolutePath();
             }
             parentFragment.startActivityForResult(takePictureIntent, 13);
@@ -685,13 +685,13 @@ public class ImageUpdater implements NotificationCenter.NotificationCenterDelega
             Intent takeVideoIntent = new Intent(MediaStore.ACTION_VIDEO_CAPTURE);
             File video = AndroidUtilities.generateVideoPath();
             if (video != null) {
-                if (Build.VERSION.SDK_INT >= 24) {
+                //if (Build.VERSION.SDK_INT >= 24) {
                     takeVideoIntent.putExtra(MediaStore.EXTRA_OUTPUT, FileProvider.getUriForFile(parentFragment.getParentActivity(), ApplicationLoader.getApplicationId() + ".provider", video));
                     takeVideoIntent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
                     takeVideoIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                } else if (Build.VERSION.SDK_INT >= 18) {
-                    takeVideoIntent.putExtra(MediaStore.EXTRA_OUTPUT, Uri.fromFile(video));
-                }
+                //} else if (Build.VERSION.SDK_INT >= 18) {
+                //    takeVideoIntent.putExtra(MediaStore.EXTRA_OUTPUT, Uri.fromFile(video));
+                //}
                 takeVideoIntent.putExtra("android.intent.extras.CAMERA_FACING", 1);
                 takeVideoIntent.putExtra("android.intent.extras.LENS_FACING_FRONT", 1);
                 takeVideoIntent.putExtra("android.intent.extra.USE_FRONT_CAMERA", true);

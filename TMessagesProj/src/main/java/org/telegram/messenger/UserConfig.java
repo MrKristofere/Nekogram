@@ -21,11 +21,13 @@ import org.telegram.tgnet.tl.TL_account;
 
 import java.util.Arrays;
 
+import tw.nekomimi.nekogram.helpers.PasscodeHelper;
+
 public class UserConfig extends BaseController {
 
     public static int selectedAccount;
-    public final static int MAX_ACCOUNT_DEFAULT_COUNT = 3;
-    public final static int MAX_ACCOUNT_COUNT = 4;
+    public final static int MAX_ACCOUNT_DEFAULT_COUNT = 8;
+    public final static int MAX_ACCOUNT_COUNT = 8;
 
     private final Object sync = new Object();
     private volatile boolean configLoaded;
@@ -42,6 +44,7 @@ public class UserConfig extends BaseController {
     public TL_account.tmpPassword tmpPassword;
     public int ratingLoadTime;
     public int botRatingLoadTime;
+    public int botGuestRatingLoadTime;
     public int webappRatingLoadTime;
     public boolean contactsReimported;
     public boolean hasValidDialogLoadIds;
@@ -107,6 +110,16 @@ public class UserConfig extends BaseController {
         return count;
     }
 
+    public static int getVisibleAccountsCount() {
+        int count = 0;
+        for (int a = 0; a < MAX_ACCOUNT_COUNT; a++) {
+            if (AccountInstance.getInstance(a).getUserConfig().isClientActivated() && !PasscodeHelper.isAccountHidden(a)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
     public UserConfig(int instance) {
         super(instance);
     }
@@ -154,6 +167,7 @@ public class UserConfig extends BaseController {
                     editor.putBoolean("unreadDialogsLoaded", unreadDialogsLoaded);
                     editor.putInt("ratingLoadTime", ratingLoadTime);
                     editor.putInt("botRatingLoadTime", botRatingLoadTime);
+                    editor.putInt("botGuestRatingLoadTime", botGuestRatingLoadTime);
                     editor.putInt("webappRatingLoadTime", webappRatingLoadTime);
                     editor.putBoolean("contactsReimported", contactsReimported);
                     editor.putInt("loginTime", loginTime);
@@ -306,6 +320,7 @@ public class UserConfig extends BaseController {
             contactsReimported = preferences.getBoolean("contactsReimported", false);
             ratingLoadTime = preferences.getInt("ratingLoadTime", 0);
             botRatingLoadTime = preferences.getInt("botRatingLoadTime", 0);
+            botGuestRatingLoadTime = preferences.getInt("botGuestRatingLoadTime", 0);
             webappRatingLoadTime = preferences.getInt("webappRatingLoadTime", 0);
             loginTime = preferences.getInt("loginTime", currentAccount);
             syncContacts = preferences.getBoolean("syncContacts", true);
@@ -476,6 +491,7 @@ public class UserConfig extends BaseController {
         migrateOffsetAccess = -1;
         ratingLoadTime = 0;
         botRatingLoadTime = 0;
+        botGuestRatingLoadTime = 0;
         webappRatingLoadTime = 0;
         draftsLoaded = false;
         contactsReimported = true;

@@ -9,6 +9,7 @@ import org.telegram.tgnet.TLRPC;
 import org.telegram.tgnet.Vector;
 import org.telegram.tgnet.tl.TL_account;
 import org.telegram.tgnet.tl.TL_bots;
+import org.telegram.tgnet.tl.TL_iv;
 import org.telegram.tgnet.tl.TL_stories;
 import org.telegram.ui.ActionBar.Theme;
 import org.telegram.ui.Stories.StoriesController;
@@ -16,6 +17,8 @@ import org.telegram.ui.Stories.StoriesController;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+
+import tw.nekomimi.nekogram.helpers.remote.UpdateHelper;
 
 public class FileRefController extends BaseController {
 
@@ -580,16 +583,15 @@ public class FileRefController extends BaseController {
                 }
                 favStickersWaiter.add(new Waiter(locationKey, parentKey));
             } else if ("update".equals(string)) {
-                TLRPC.TL_help_getAppUpdate req = new TLRPC.TL_help_getAppUpdate();
-                try {
-                    req.source = ApplicationLoader.applicationContext.getPackageManager().getInstallerPackageName(ApplicationLoader.applicationContext.getPackageName());
-                } catch (Exception ignore) {
-
-                }
-                if (req.source == null) {
-                    req.source = "";
-                }
-                getConnectionsManager().sendRequest(req, (response, error) -> onRequestComplete(locationKey, parentKey, response, error, true, false));
+                UpdateHelper.getInstance().checkNewVersionAvailable((response, error) -> {
+                    if (error != null) {
+                        TLRPC.TL_error error1 = new TLRPC.TL_error();
+                        error1.text = error;
+                        onRequestComplete(locationKey, parentKey, response, error1, true, false);
+                    } else {
+                        onRequestComplete(locationKey, parentKey, response, null, true, false);
+                    }
+                });
             } else if (string.startsWith("avatar_")) {
                 long id = Utilities.parseLong(string);
                 if (id > 0) {
@@ -1005,6 +1007,8 @@ public class FileRefController extends BaseController {
                                     break;
                                 }
                             }
+                        } else if (message.rich_message != null) {
+                            result = getFileReferenceForRichMessage(message.rich_message, requester.location, needReplacement, locationReplacement);
                         } else if (message.media instanceof TLRPC.TL_messageMediaPoll) {
                             result = getFileReferenceForPoll((TLRPC.TL_messageMediaPoll) message.media, requester.location, needReplacement, locationReplacement);
                         } else if (message.media != null) {
@@ -1667,6 +1671,20 @@ public class FileRefController extends BaseController {
         return result;
     }
 
+    private byte[] getFileReferenceForRichMessage(TL_iv.RichMessage richMessage, TLRPC.InputFileLocation location, boolean[] needReplacement, TLRPC.InputFileLocation[] locationReplacement) {
+        if (richMessage == null) return null;
+        byte[] result = null;
+        for (TLRPC.Photo photo : richMessage.photos) {
+            result = getFileReference(photo, location, needReplacement, locationReplacement);
+            if (result != null) return result;
+        }
+        for (TLRPC.Document document : richMessage.documents) {
+            result = getFileReference(document, null, location, needReplacement, locationReplacement);
+            if (result != null) return result;
+        }
+        return result;
+    }
+
     private byte[] getFileReferenceForMediaImpl(TLRPC.MessageMedia media, TLRPC.InputFileLocation location, boolean[] needReplacement, TLRPC.InputFileLocation[] locationReplacement) {
         if (media == null) {
             return null;
@@ -1951,26 +1969,43 @@ public class FileRefController extends BaseController {
 
     private boolean getPeerReferenceReplacement(TLRPC.User user, TLRPC.Chat chat, boolean big, TLRPC.InputFileLocation location, TLRPC.InputFileLocation[] replacement, boolean[] needReplacement) {
         if (needReplacement != null && needReplacement[0]) {
-            TLRPC.TL_inputPeerPhotoFileLocation inputPeerPhotoFileLocation = new TLRPC.TL_inputPeerPhotoFileLocation();
+            final TLRPC.TL_inputPeerPhotoFileLocation inputPeerPhotoFileLocation = new TLRPC.TL_inputPeerPhotoFileLocation();
             inputPeerPhotoFileLocation.id = location.volume_id;
             inputPeerPhotoFileLocation.volume_id = location.volume_id;
             inputPeerPhotoFileLocation.local_id = location.local_id;
             inputPeerPhotoFileLocation.big = big;
-            TLRPC.InputPeer peer;
+            final TLRPC.InputPeer peer;
             if (user != null) {
-                TLRPC.TL_inputPeerUser inputPeerUser = new TLRPC.TL_inputPeerUser();
-                inputPeerUser.user_id = user.id;
-                inputPeerUser.access_hash = user.access_hash;
-                inputPeerPhotoFileLocation.photo_id = user.photo.photo_id;
-                peer = inputPeerUser;
+                if (user.access_hash == 0 && user.fromMessageId != 0 && user.fromMessageDialogId != 0) {
+                    final TLRPC.TL_inputPeerUserFromMessage inputPeerUserFromMessage = new TLRPC.TL_inputPeerUserFromMessage();
+                    inputPeerUserFromMessage.user_id = user.id;
+                    inputPeerUserFromMessage.peer = getMessagesController().getInputPeer(user.fromMessageDialogId);
+                    inputPeerUserFromMessage.msg_id = user.fromMessageId;
+                    inputPeerPhotoFileLocation.photo_id = user.photo.photo_id;
+                    peer = inputPeerUserFromMessage;
+                } else {
+                    final TLRPC.TL_inputPeerUser inputPeerUser = new TLRPC.TL_inputPeerUser();
+                    inputPeerUser.user_id = user.id;
+                    inputPeerUser.access_hash = user.access_hash;
+                    inputPeerPhotoFileLocation.photo_id = user.photo.photo_id;
+                    peer = inputPeerUser;
+                }
             } else {
                 if (ChatObject.isChannel(chat)) {
-                    TLRPC.TL_inputPeerChannel inputPeerChannel = new TLRPC.TL_inputPeerChannel();
-                    inputPeerChannel.channel_id = chat.id;
-                    inputPeerChannel.access_hash = chat.access_hash;
-                    peer = inputPeerChannel;
+                    if (chat.access_hash == 0 && chat.fromMessageDialogId != 0 && chat.fromMessageId != 0) {
+                        final TLRPC.TL_inputPeerChannelFromMessage inputPeerChannelFromMessage = new TLRPC.TL_inputPeerChannelFromMessage();
+                        inputPeerChannelFromMessage.channel_id = chat.id;
+                        inputPeerChannelFromMessage.peer = getMessagesController().getInputPeer(chat.fromMessageDialogId);
+                        inputPeerChannelFromMessage.msg_id = chat.fromMessageId;
+                        peer = inputPeerChannelFromMessage;
+                    } else {
+                        final TLRPC.TL_inputPeerChannel inputPeerChannel = new TLRPC.TL_inputPeerChannel();
+                        inputPeerChannel.channel_id = chat.id;
+                        inputPeerChannel.access_hash = chat.access_hash;
+                        peer = inputPeerChannel;
+                    }
                 } else {
-                    TLRPC.TL_inputPeerChat inputPeerChat = new TLRPC.TL_inputPeerChat();
+                    final TLRPC.TL_inputPeerChat inputPeerChat = new TLRPC.TL_inputPeerChat();
                     inputPeerChat.chat_id = chat.id;
                     peer = inputPeerChat;
                 }

@@ -207,7 +207,7 @@ public class AlertDialog extends Dialog implements Drawable.Callback, Notificati
     private ArrayList<AlertDialogCell> itemViews = new ArrayList<>();
     private float aspectRatio;
     private boolean dimEnabled = true;
-    private float dimAlpha = 0.5f;
+    private float dimAlpha = 0.32f;
     private boolean dimCustom = false;
     private final Theme.ResourcesProvider resourcesProvider;
     private boolean topAnimationAutoRepeat = true;
@@ -444,10 +444,10 @@ public class AlertDialog extends Dialog implements Drawable.Callback, Notificati
                 if (progressViewStyle == ALERT_TYPE_MESSAGE) {
                     layoutParams = (LayoutParams) contentScrollView.getLayoutParams();
 
-                    if (customView != null) {
+                    if (customView != null&& buttonsLayout != null) {
                         layoutParams.topMargin = titleTextView == null && messageTextView.getVisibility() == GONE && items == null ? dp(16) : 0;
                         layoutParams.bottomMargin = buttonsLayout == null ? dp(8) : 0;
-                    } else if (items != null) {
+                    } else if (items != null || customView != null) {
                         layoutParams.topMargin = titleTextView == null && messageTextView.getVisibility() == GONE ? dp(8) : 0;
                         layoutParams.bottomMargin = dp(8);
                     } else if (messageTextView.getVisibility() == VISIBLE) {
@@ -572,7 +572,7 @@ public class AlertDialog extends Dialog implements Drawable.Callback, Notificati
                             (getHeight() + h) / 2f
                     );
                 } else {
-                    r = dp(10);
+                    r = dp(20);
                     AndroidUtilities.rectTmp.set(getPaddingLeft(), getPaddingTop(), getMeasuredWidth() - getPaddingRight(), getMeasuredHeight() - getPaddingBottom());
                 }
 
@@ -1264,7 +1264,8 @@ public class AlertDialog extends Dialog implements Drawable.Callback, Notificati
         if (customView == null || !checkFocusable || !canTextInput(customView)) {
             params.flags |= WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM;
         } else {
-            params.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE;
+            params.flags &= ~WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM;
+            params.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE;
         }
         if (Build.VERSION.SDK_INT >= 28) {
             params.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;

@@ -478,7 +478,7 @@ public class PrivacyControlActivity extends BaseFragment implements Notification
             ContactsController.getInstance(currentAccount).loadPrivacySettings();
         }
         if (rulesType == PRIVACY_RULES_TYPE_PHOTO) {
-            imageUpdater = new ImageUpdater(false, ImageUpdater.FOR_TYPE_USER, true);
+            imageUpdater = new ImageUpdater(true, ImageUpdater.FOR_TYPE_USER, true);
             imageUpdater.parentFragment = this;
             imageUpdater.setDelegate(this);
             TLRPC.UserFull userFull = getMessagesController().getUserFull(getUserConfig().clientUserId);
@@ -1570,7 +1570,7 @@ public class PrivacyControlActivity extends BaseFragment implements Notification
                 readRow = rowCount++;
                 readDetailRow = rowCount++;
             }
-            if (rulesType == PRIVACY_RULES_TYPE_LASTSEEN && !getMessagesController().premiumFeaturesBlocked()) {
+            if (rulesType == PRIVACY_RULES_TYPE_LASTSEEN && getUserConfig().isPremium() && !getMessagesController().premiumFeaturesBlocked()) {
                 readPremiumRow = rowCount++;
                 readPremiumDetailRow = rowCount++;
             }

@@ -31,12 +31,14 @@ import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.TLObject;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.tgnet.tl.TL_account;
+import org.telegram.tgnet.tl.TL_aicompose;
 import org.telegram.tgnet.tl.TL_phone;
+import org.telegram.tgnet.tl.TL_update;
 import org.telegram.ui.ActionBar.AlertDialog;
 import org.telegram.ui.ActionBar.BaseFragment;
 import org.telegram.ui.ActionBar.INavigationLayout;
+import org.telegram.ui.Components.AIEditorAlert;
 import org.telegram.ui.Components.AlertsCreator;
-import org.telegram.ui.Components.Bulletin;
 import org.telegram.ui.Components.BulletinFactory;
 import org.telegram.ui.Components.CreateBotAlert;
 import org.telegram.ui.Components.Premium.boosts.UserSelectorBottomSheet;
@@ -55,6 +57,10 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.regex.Matcher;
+
+import tw.nekomimi.nekogram.helpers.SettingsHelper;
+import tw.nekomimi.nekogram.helpers.UserHelper;
+import tw.nekomimi.nekogram.settings.NekoLanguagesSelectActivity;
 
 public class LinkManager {
 
@@ -124,11 +130,20 @@ public class LinkManager {
         if ("invoice".equalsIgnoreCase(first))
             return handleInvoiceSlug(second);
 
+        if ("addstyle".equalsIgnoreCase(first))
+            return handleAiStyle(second);
+
         if ("oauth".equalsIgnoreCase(first))
             return handleOAuth(uri, uri.getQueryParameter("startapp"));
         if ("newbot".equalsIgnoreCase(first)) {
             if (segments.size() < 2) return true;
             return handleNewBot(second, segments.size() >= 3 ? segments.get(2) : null, uri.getQueryParameter("name"));
+        }
+
+        if ("nekosettings".equals(first)) {
+            SettingsHelper.processDeepLink(uri, this::presentFragment,
+                    () -> getBulletinFactory().createErrorBulletin(LocaleController.getString(R.string.UnknownNekoSettingsOption)).show(), progress);
+            return true;
         }
 
         return false;
@@ -176,6 +191,25 @@ public class LinkManager {
 
         if ("settings".equalsIgnoreCase(first))
             return handleSettings(segments.subList(1, segments.size()));
+
+        if ("update".equals(first) || "upgrade".equals(first)) {
+            activity.checkAppUpdate(true, progress);
+            return true;
+        }
+
+        if ("meow".equals(first) || "nya".equals(first)) {
+            getBulletinFactory().createErrorBulletin(LocaleController.getString(R.string.Nya)).show();
+            return true;
+        }
+
+        if ("user".equalsIgnoreCase(first) || "chat".equalsIgnoreCase(first)) {
+            var id = Utilities.parseLong(uri.getQueryParameter("id"));
+            if (id > 0) {
+                UserHelper.getInstance(currentAccount).openByDialogId("chat".equalsIgnoreCase(first) ? -id : id, activity, this::presentFragment, progress);
+                return true;
+            }
+            return false;
+        }
 
         if ("chats".equalsIgnoreCase(first)) {
             if ("search".equalsIgnoreCase(second)) {
@@ -252,6 +286,9 @@ public class LinkManager {
             return true;
         }
 
+        if ("addstyle".equalsIgnoreCase(first))
+            return handleAiStyle(uri.getQueryParameter("slug"));
+
         return false;
     }
 
@@ -324,7 +361,7 @@ public class LinkManager {
         }
         if ("language".equalsIgnoreCase(first)) { // open_settings = 10;
             if ("do-not-translate".equalsIgnoreCase(second)) {
-                presentFragment(new RestrictedLanguagesSelectActivity());
+                presentFragment(new NekoLanguagesSelectActivity(NekoLanguagesSelectActivity.TYPE_RESTRICTED));
                 return true;
             }
             presentFragment(new LanguageSelectActivity());
@@ -427,7 +464,7 @@ public class LinkManager {
                                     MessagesController.getInstance(currentAccount).putChats(updates.chats, false);
 
                                     TLRPC.GroupCall groupCall = null;
-                                    for (TLRPC.TL_updateGroupCall u : findUpdatesAndRemove(updates, TLRPC.TL_updateGroupCall.class)) {
+                                    for (TL_update.TL_updateGroupCall u : findUpdatesAndRemove(updates, TL_update.TL_updateGroupCall.class)) {
                                         groupCall = u.call;
                                     }
 
@@ -1371,6 +1408,40 @@ public class LinkManager {
 //        } else {
 //            open.run();
 //        }
+        return true;
+    }
+
+    private boolean handleAiStyle(String slug) {
+        if (TextUtils.isEmpty(slug)) return false;
+        final TL_aicompose.getTone req = new TL_aicompose.getTone();
+        final TL_aicompose.inputAiComposeToneSlug input = new TL_aicompose.inputAiComposeToneSlug();
+        input.slug = slug;
+        req.tone = input;
+        init();
+        ConnectionsManager.getInstance(currentAccount).sendRequestTyped(req, AndroidUtilities::runOnUIThread, (tones, err) -> {
+            done();
+
+            if (tones instanceof TL_aicompose.TL_tones) {
+                final TL_aicompose.TL_tones t = (TL_aicompose.TL_tones) tones;
+                MessagesController.getInstance(currentAccount).putUsers(t.users, false);
+
+                final BaseFragment fragment = LaunchActivity.getSafeLastFragment();
+                if (fragment == null) return;
+                if (t.tones.isEmpty()) return;
+                final TL_aicompose.AiComposeTone tone = t.tones.get(0);
+
+                new AIEditorAlert.AiStyleAlert(fragment.getContext(), tone, fragment.getResourceProvider())
+                    .show();
+            } else if (err != null) {
+                if ("AICOMPOSE_TONE_SLUG_INVALID".equalsIgnoreCase(err.text)) {
+                    getBulletinFactory()
+                        .createSimpleBulletin(R.raw.error, getString(R.string.AIEditorStyleNotFound))
+                        .show();
+                } else {
+                    getBulletinFactory().showForError(err);
+                }
+            }
+        });
         return true;
     }
 

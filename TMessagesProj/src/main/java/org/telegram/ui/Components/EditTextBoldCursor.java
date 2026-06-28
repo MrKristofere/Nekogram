@@ -9,7 +9,6 @@
 package org.telegram.ui.Components;
 
 import static org.telegram.messenger.AndroidUtilities.dp;
-import static org.telegram.messenger.AndroidUtilities.getWallpaperRotation;
 
 import android.animation.AnimatorSet;
 import android.animation.ObjectAnimator;
@@ -33,20 +32,17 @@ import android.os.Build;
 import android.os.SystemClock;
 
 import androidx.annotation.Keep;
-import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.core.graphics.ColorUtils;
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat;
 
 import android.text.Editable;
 import android.text.Layout;
-import android.text.Selection;
 import android.text.Spanned;
 import android.text.StaticLayout;
 import android.text.TextPaint;
 import android.text.TextUtils;
 import android.text.TextWatcher;
-import android.util.Log;
 import android.view.ActionMode;
 import android.view.Gravity;
 import android.view.Menu;
@@ -55,10 +51,9 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewTreeObserver;
 import android.view.accessibility.AccessibilityNodeInfo;
-import android.widget.EditText;
 import android.widget.TextView;
 
-import com.google.common.primitives.Chars;
+import org.lsposed.hiddenapibypass.HiddenApiBypass;
 
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.BuildVars;
@@ -67,6 +62,7 @@ import org.telegram.messenger.LocaleController;
 import org.telegram.messenger.R;
 import org.telegram.messenger.Utilities;
 import org.telegram.messenger.XiaomiUtilities;
+import org.telegram.messenger.utils.Choreographer60FpsContent;
 import org.telegram.ui.ActionBar.FloatingActionMode;
 import org.telegram.ui.ActionBar.FloatingToolbar;
 import org.telegram.ui.ActionBar.Theme;
@@ -76,6 +72,8 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
+
+import tw.nekomimi.nekogram.NekoConfig;
 
 public class EditTextBoldCursor extends EditTextEffects {
 
@@ -95,15 +93,7 @@ public class EditTextBoldCursor extends EditTextEffects {
     private SubstringLayoutAnimator hintAnimator;
     float rightHintOffset;
 
-    private Runnable invalidateRunnable = new Runnable() {
-        @Override
-        public void run() {
-            invalidate();
-            if (attachedToWindow != null) {
-                AndroidUtilities.runOnUIThread(this, 500);
-            }
-        }
-    };
+    private final Choreographer60FpsContent.FrameCallback invalidateCallback = d -> invalidate();
 
     private Paint linePaint;
     private Paint activeLinePaint;
@@ -172,6 +162,53 @@ public class EditTextBoldCursor extends EditTextEffects {
 
     private List<TextWatcher> registeredTextWatchers = new ArrayList<>();
     private boolean isTextWatchersSuppressed = false;
+
+    private static Method canUndoMethod;
+    private static Method canRedoMethod;
+    public static boolean disableMarkdown = NekoConfig.disableMarkdownByDefault;
+    private boolean showDisableMarkdown = false;
+
+    static {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                canUndoMethod = HiddenApiBypass.getDeclaredMethod(TextView.class, "canUndo");
+                canRedoMethod = HiddenApiBypass.getDeclaredMethod(TextView.class, "canRedo");
+            } else {
+                canUndoMethod = TextView.class.getDeclaredMethod("canUndo");
+                canRedoMethod = TextView.class.getDeclaredMethod("canRedo");
+            }
+            canUndoMethod.setAccessible(true);
+            canRedoMethod.setAccessible(true);
+        } catch (Throwable t) {
+            FileLog.e(t);
+            canUndoMethod = null;
+            canRedoMethod = null;
+        }
+    }
+
+    public final boolean canUndo() {
+        if (canUndoMethod == null) return false;
+        try {
+            return (boolean) canUndoMethod.invoke(this);
+        } catch (Throwable t) {
+            FileLog.e(t);
+        }
+        return false;
+    }
+
+    public final boolean canRedo() {
+        if (canRedoMethod == null) return false;
+        try {
+            return (boolean) canRedoMethod.invoke(this);
+        } catch (Throwable t) {
+            FileLog.e(t);
+        }
+        return false;
+    }
+
+    public void setShowDisableMarkdown(boolean show) {
+        showDisableMarkdown = show;
+    }
 
     public void setHintText2(CharSequence text, boolean animated) {
         if (hintAnimatedDrawable2 != null) {
@@ -743,6 +780,11 @@ public class EditTextBoldCursor extends EditTextEffects {
         return super.onTouchEvent(event);
     }
 
+    @Override
+    public void invalidate() {
+        super.invalidate();
+    }
+
     public void invalidateForce() {
         invalidate();
         if (!isHardwareAccelerated()) {
@@ -1134,14 +1176,14 @@ public class EditTextBoldCursor extends EditTextEffects {
             FileLog.e(e);
         }
         attachedToWindow = getRootView();
-        AndroidUtilities.runOnUIThread(invalidateRunnable);
+        Choreographer60FpsContent.getInstance().addFrameCallback(invalidateCallback, 2);
     }
 
     @Override
     protected void onDetachedFromWindow() {
         super.onDetachedFromWindow();
         attachedToWindow = null;
-        AndroidUtilities.cancelRunOnUIThread(invalidateRunnable);
+        Choreographer60FpsContent.getInstance().removeFrameCallback(invalidateCallback);
     }
 
     BlurredBackgroundDrawableViewFactory blurredBackgroundDrawableViewFactory;
@@ -1169,6 +1211,7 @@ public class EditTextBoldCursor extends EditTextEffects {
             };
             callback.onCreateActionMode(floatingActionMode, floatingActionMode.getMenu());
             extendActionMode(floatingActionMode, floatingActionMode.getMenu());
+            addUndoRedo(floatingActionMode.getMenu());
             floatingActionMode.invalidate();
             getViewTreeObserver().addOnPreDrawListener(floatingToolbarPreDrawListener);
             invalidate();
@@ -1176,6 +1219,30 @@ public class EditTextBoldCursor extends EditTextEffects {
         } else {
             return super.startActionMode(callback);
         }
+    }
+
+    private void addUndoRedo(Menu menu) {
+        if (menu.findItem(android.R.id.undo) == null && menu.findItem(android.R.id.redo) == null) {
+            if (canUndo()) {
+                menu.add(R.id.menu_undoredo, android.R.id.undo, 2, LocaleController.getString(R.string.EditUndo));
+            }
+            if (canRedo()) {
+                menu.add(R.id.menu_undoredo, android.R.id.redo, 3, LocaleController.getString(R.string.EditRedo));
+            }
+        }
+        if (showDisableMarkdown) {
+            menu.add(R.id.menu_groupbolditalic, R.id.menu_markdown, 20, disableMarkdown ? LocaleController.getString(R.string.EditEnableMarkdown) : LocaleController.getString(R.string.EditDisableMarkdown));
+        }
+    }
+
+    @Override
+    public boolean onTextContextMenuItem(int id) {
+        if (id == R.id.menu_markdown) {
+            disableMarkdown = !disableMarkdown;
+            floatingActionMode.finish();
+            return true;
+        }
+        return super.onTextContextMenuItem(id);
     }
 
     private boolean shouldShowQuoteButton() {
@@ -1247,7 +1314,7 @@ public class EditTextBoldCursor extends EditTextEffects {
     }
 
     public void setHandlesColor(int color) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || XiaomiUtilities.isMIUI()) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || (XiaomiUtilities.isMIUI() && Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU)) {
             return;
         }
         try {
@@ -1289,8 +1356,4 @@ public class EditTextBoldCursor extends EditTextEffects {
         }
     }
 
-    @Override
-    protected void dispatchDraw(Canvas canvas) {
-        super.dispatchDraw(canvas);
-    }
 }

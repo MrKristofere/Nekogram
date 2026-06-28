@@ -77,7 +77,6 @@ import androidx.core.content.FileProvider;
 import androidx.core.graphics.ColorUtils;
 import androidx.core.util.Consumer;
 
-import org.checkerframework.common.subtyping.qual.Bottom;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -3463,6 +3462,7 @@ public abstract class BotWebViewContainer extends FrameLayout implements Notific
     }
 
     public interface Delegate {
+        default void onGetTextToCopy(String json) {};
         /**
          * Called when WebView requests to close itself
          */
@@ -4410,7 +4410,7 @@ public abstract class BotWebViewContainer extends FrameLayout implements Notific
                 public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture, Message resultMsg) {
                     d("onCreateWindow isDialog=" + isDialog + " isUserGesture=" + isUserGesture + " resultMsg=" + resultMsg);
                     final String fromUrl = getUrl();
-                    if (SharedConfig.inappBrowser) {
+                    if (MessagesController.getInstance(UserConfig.selectedAccount).isWebBrowserInAppEnabled()) {
                         if (botWebViewContainer == null) return false;
                         BaseFragment lastFragment = LaunchActivity.getSafeLastFragment();
                         if (lastFragment == null) return false;

@@ -147,11 +147,14 @@ public class MediaActivity extends BaseFragment implements SharedMediaLayout.Sha
         getNotificationCenter().removeObserver(this, NotificationCenter.userInfoDidLoad);
         getNotificationCenter().removeObserver(this, NotificationCenter.currentUserPremiumStatusChanged);
         getNotificationCenter().removeObserver(this, NotificationCenter.storiesEnabledUpdate);
+        Bulletin.removeDelegate(this);
         if (applyBulletin != null) {
             Runnable runnable = applyBulletin;
             applyBulletin = null;
             AndroidUtilities.runOnUIThread(runnable);
         }
+        sharedMediaPreloader.onDestroy(this);
+        sharedMediaPreloader.removeDelegate(this);
     }
 
     @Override
@@ -175,6 +178,7 @@ public class MediaActivity extends BaseFragment implements SharedMediaLayout.Sha
         backDrawable.setAnimationTime(240);
         actionBar.setCastShadows(false);
         actionBar.setAddToContainer(false);
+        actionBar.setOccupyStatusBar(!AndroidUtilities.isTablet());
         actionBar.setActionBarMenuOnItemClick(new ActionBar.ActionBarMenuOnItemClick() {
             @Override
             public void onItemClick(int id) {
@@ -738,7 +742,7 @@ public class MediaActivity extends BaseFragment implements SharedMediaLayout.Sha
             fragmentView.addView(sharedMediaLayout);
         }
         fragmentView.addView(actionBar);
-        fragmentView.addView(avatarContainer);
+        actionBar.addView(avatarContainer, 0, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.MATCH_PARENT, Gravity.TOP | Gravity.LEFT));
         fragmentView.blurBehindViews.add(sharedMediaLayout);
         if (type == TYPE_STORIES) {
             showSubtitle(0, false, false);
@@ -807,7 +811,7 @@ public class MediaActivity extends BaseFragment implements SharedMediaLayout.Sha
             }
         }
 
-        final ImageLocation thumbLocation = ImageLocation.getForUserOrChat(avatarObject, ImageLocation.TYPE_SMALL);
+        final ImageLocation thumbLocation = ImageLocation.getForUserOrChat(currentAccount, avatarObject, ImageLocation.TYPE_SMALL);
         avatarImageView.setImage(thumbLocation, "50_50", avatarDrawable, avatarObject);
 
         if (nameTextView[0] != null && TextUtils.isEmpty(nameTextView[0].getText())) {

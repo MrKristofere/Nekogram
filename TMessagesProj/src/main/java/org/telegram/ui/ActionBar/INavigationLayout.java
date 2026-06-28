@@ -25,6 +25,9 @@ public interface INavigationLayout {
     int FORCE_NOT_ATTACH_VIEW = -2;
     int FORCE_ATTACH_VIEW_AS_FIRST = -3;
 
+    boolean isLayersLayout();
+    boolean isRightLayout();
+
     boolean presentFragment(NavigationParams params);
     boolean checkTransitionAnimation();
     boolean addFragmentToStack(BaseFragment fragment, int position);
@@ -59,6 +62,7 @@ public interface INavigationLayout {
     void drawCurrentPreviewFragment(Canvas canvas, Drawable foregroundDrawable);
 
     void drawHeaderShadow(Canvas canvas, int alpha, int y);
+    void setHeaderShadow(Drawable drawable);
 
     boolean isSwipeInProgress();
 
@@ -310,6 +314,7 @@ public interface INavigationLayout {
         /**
          * @deprecated You should override {@link INavigationLayoutDelegate#needPresentFragment(INavigationLayout, NavigationParams)} for more fields
          */
+        @Deprecated
         default boolean needPresentFragment(BaseFragment fragment, boolean removeLast, boolean forceWithoutAnimation, INavigationLayout layout) {
             return true;
         }
@@ -339,12 +344,18 @@ public interface INavigationLayout {
         public boolean preview;
         public ActionBarPopupWindow.ActionBarPopupWindowLayout menuView;
         public boolean needDelayWithoutAnimation;
+        public boolean forceRightLayout;
 
         public boolean isFromDelay;
         public boolean delayDone;
 
         public NavigationParams(BaseFragment fragment) {
             this.fragment = fragment;
+        }
+
+        public NavigationParams forceRightLayout() {
+            forceRightLayout = true;
+            return this;
         }
 
         public NavigationParams setRemoveLast(boolean removeLast) {

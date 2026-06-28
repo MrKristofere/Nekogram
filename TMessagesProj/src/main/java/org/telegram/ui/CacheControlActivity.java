@@ -110,17 +110,16 @@ import org.telegram.ui.Components.SlideChooseView;
 import org.telegram.ui.Components.StorageDiagramView;
 import org.telegram.ui.Components.StorageUsageView;
 import org.telegram.ui.Components.TypefaceSpan;
-import org.telegram.ui.Components.UndoView;
 import org.telegram.ui.Storage.CacheModel;
 
 import java.io.File;
-import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashSet;
 import java.util.Objects;
+
+import tw.nekomimi.nekogram.helpers.EmojiHelper;
 
 public class CacheControlActivity extends BaseFragment implements NotificationCenter.NotificationCenterDelegate {
 
@@ -156,7 +155,7 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
 
     private boolean[] selected = new boolean[] { true, true, true, true, true, true, true, true, true, true, true };
     private long databaseSize = -1;
-    private long cacheSize = -1, cacheEmojiSize = -1, cacheTempSize = -1;
+    private long cacheSize = -1, cacheEmojiSize = -1, cacheTempSize = -1, cacheCustomEmojiSize = -1;
     private long documentsSize = -1;
     private long audioSize = -1;
     private long storiesSize = -1;
@@ -364,6 +363,11 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
                 return;
             }
             stickersCacheSize += cacheEmojiSize;
+            cacheCustomEmojiSize = EmojiHelper.getInstance().getEmojiSize();
+            if (canceled) {
+                return;
+            }
+            stickersCacheSize += cacheCustomEmojiSize;
             audioSize = getDirectorySize(FileLoader.checkDirectory(FileLoader.MEDIA_DIR_AUDIO), 0);
             storiesSize = getDirectorySize(FileLoader.checkDirectory(FileLoader.MEDIA_DIR_STORIES), 0);
             if (canceled) {
@@ -1028,6 +1032,9 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
                 clearDirI[0]++;
                 next.run();
             }
+            if (type == 100) {
+                EmojiHelper.getInstance().deleteAll();
+            }
             if (type == FileLoader.MEDIA_DIR_IMAGE || type == FileLoader.MEDIA_DIR_VIDEO) {
                 int publicDirectoryType;
                 if (type == FileLoader.MEDIA_DIR_IMAGE) {
@@ -1082,6 +1089,8 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
                 stickersCacheSize = getDirectorySize(new File(FileLoader.checkDirectory(FileLoader.MEDIA_DIR_CACHE), "acache"), documentsMusicType);
                 cacheEmojiSize = getDirectorySize(FileLoader.checkDirectory(FileLoader.MEDIA_DIR_CACHE), 3);
                 stickersCacheSize += cacheEmojiSize;
+                cacheCustomEmojiSize = EmojiHelper.getInstance().getEmojiSize();
+                stickersCacheSize += cacheCustomEmojiSize;
             }
         }
         final boolean imagesClearedFinal = imagesCleared;
@@ -1426,7 +1435,7 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
             return;
         }
 
-        bottomSheet = new DilogCacheBottomSheet(CacheControlActivity.this, entities, entities.createCacheModel(), new DilogCacheBottomSheet.Delegate() {
+        bottomSheet = new DialogCacheBottomSheet(CacheControlActivity.this, entities, entities.createCacheModel(), new DialogCacheBottomSheet.Delegate() {
             @Override
             public void onAvatarClick() {
                 bottomSheet.dismiss();
@@ -2468,7 +2477,7 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
                         }
                     });
                     cachedMediaLayout.setCacheModel(cacheModel);
-                    nestedSizeNotifierLayout.setChildLayout(cachedMediaLayout);
+                    nestedSizeNotifierLayout.setChildLayout(cachedMediaLayout, dp(12 + 12 + 16));
                     view.setLayoutParams(new RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
                     break;
                 case VIEW_TYPE_CLEAR_CACHE_BUTTON:

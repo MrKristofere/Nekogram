@@ -15,8 +15,10 @@ import androidx.core.content.ContextCompat;
 
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.DocumentObject;
+import org.telegram.messenger.Emoji;
 import org.telegram.messenger.ImageLocation;
 import org.telegram.messenger.LocaleController;
+import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.R;
 import org.telegram.messenger.SvgHelper;
 import org.telegram.messenger.UserConfig;
@@ -34,7 +36,6 @@ public class AvailableReactionCell extends FrameLayout {
     private BackupImageView imageView;
     private Switch switchView;
     private CheckBox2 checkBox;
-    private View overlaySelectorView;
     public TLRPC.TL_availableReaction react;
     private boolean canLock;
     public boolean locked;
@@ -44,6 +45,7 @@ public class AvailableReactionCell extends FrameLayout {
         this.canLock = canLock;
 
         textView = new SimpleTextView(context);
+        NotificationCenter.listenEmojiLoading(textView);
         textView.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText));
         textView.setTextSize(16);
         textView.setTypeface(AndroidUtilities.bold());
@@ -68,9 +70,6 @@ public class AvailableReactionCell extends FrameLayout {
             switchView.setColors(Theme.key_switchTrack, Theme.key_switchTrackChecked, Theme.key_switchTrackBlueThumb, Theme.key_switchTrackBlueThumbChecked);
             addView(switchView, LayoutHelper.createFrameRelatively(37, 20, Gravity.END | Gravity.CENTER_VERTICAL, 0, 0, 22, 0));
         }
-        overlaySelectorView = new View(context);
-        overlaySelectorView.setBackground(Theme.getSelectorDrawable(false));
-        addView(overlaySelectorView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
         setWillNotDraw(false);
     }
 
@@ -90,7 +89,7 @@ public class AvailableReactionCell extends FrameLayout {
             animated = true;
         }
         this.react = react;
-        textView.setText(react.title);
+        textView.setText(Emoji.replaceEmoji(react.title, textView.getPaint().getFontMetricsInt(), false));
         SvgHelper.SvgDrawable svgThumb = DocumentObject.getSvgThumb(react.static_icon, Theme.key_windowBackgroundGray, 1.0f);
         imageView.setImage(ImageLocation.getForDocument(react.activate_animation), ReactionsUtils.ACTIVATE_ANIMATION_FILTER, "tgs", svgThumb, react);
 
