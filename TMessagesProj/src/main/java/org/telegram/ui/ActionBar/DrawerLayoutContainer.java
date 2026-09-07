@@ -149,8 +149,25 @@ public class DrawerLayoutContainer extends FrameLayout {
         super.dispatchDraw(canvas);
 
         if (lastWindowInsetsCompat != null) {
-            final Insets insets = lastWindowInsetsCompat.getInsets(WindowInsetsCompat.Type.ime()
-                | WindowInsetsCompat.Type.systemBars()
+            // Edge-to-edge fragments (ChatActivity, DialogsActivity) draw the navigation
+            // area themselves (blur / input bubble). A global solid fill here would cover
+            // it with a "zalivka" strip and, since IME inset snaps instantly while the
+            // keyboard slides up smoothly, it would sharply jump to keyboard height.
+            boolean skipFill = false;
+            try {
+                if (parentActionBarLayout != null && parentActionBarLayout.getLastFragment() != null) {
+                    skipFill = parentActionBarLayout.getLastFragment().isSupportEdgeToEdge();
+                }
+            } catch (Throwable ignore) {
+            }
+            if (skipFill) {
+                return;
+            }
+
+            // Use only stable system bars + cutout insets (no IME): the area behind an
+            // open keyboard is covered by the keyboard itself, so filling IME height
+            // would only produce a visible block sharply rising with the keyboard.
+            final Insets insets = lastWindowInsetsCompat.getInsets(WindowInsetsCompat.Type.systemBars()
                 | WindowInsetsCompat.Type.displayCutout());
 
             if (insets.bottom > 0) {
