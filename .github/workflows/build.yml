@@ -9,14 +9,22 @@ concurrency:
 on:
   push:
     branches: [ "main", "dev", "ci", "ayu-features" ]
-    paths-ignore:
-      - '**.md'
-      - '.github/**'
-      - '!.github/workflows/build.yml'
+    # NOTE: '!' negation is only supported in `paths`, NOT in `paths-ignore`
+    # (silently dropped there) — that's why a workflow-only push used to skip
+    # the build. Include everything, drop docs and .github, then re-include
+    # this file so workflow changes are still validated by CI.
+    paths:
+      - '**'
+      - '!**.md'
+      - '!.github/**'
+      - '.github/workflows/build.yml'
   pull_request:
     branches: [ "main", "dev" ]
-    paths-ignore:
-      - '**.md'
+    paths:
+      - '**'
+      - '!**.md'
+      - '!.github/**'
+      - '.github/workflows/build.yml'
   workflow_call:
 
 jobs:
@@ -144,11 +152,15 @@ jobs:
             -PgitCommitDate=$GIT_DATE \
             -PbuildChannel=$CHANNEL
 
+      # Attest every APK + AAB produced by both gradle tasks above. Must run
+      # AFTER bundleRelease, otherwise .aab artifacts are never attested.
       - name: Attest
         if: github.event_name != 'pull_request'
         uses: actions/attest@v4
         with:
-          subject-path: '${{ github.workspace }}/TMessagesProj_App/build/outputs'
+          subject-path: |
+            ${{ github.workspace }}/TMessagesProj_App/build/outputs/**/*.apk
+            ${{ github.workspace }}/TMessagesProj_App/build/outputs/**/*.aab
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
