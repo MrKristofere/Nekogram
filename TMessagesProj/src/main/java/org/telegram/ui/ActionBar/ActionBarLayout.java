@@ -400,16 +400,13 @@ public class ActionBarLayout extends FrameLayout implements INavigationLayout, F
             isKeyboardVisible = usableViewHeight - (rect.bottom - rect.top) > 0;
             if (waitingForKeyboardCloseRunnable != null && !containerView.isKeyboardVisible && !containerViewBack.isKeyboardVisible) {
                 AndroidUtilities.cancelRunOnUIThread(waitingForKeyboardCloseRunnable);
-                if (NekoConfig.removeChatDelay) {
-                    // Avoid triggering startLayoutAnimation() mid-layout-pass which causes
-                    // a missed first frame or a visual "jump" at animation start.
-                    final Runnable run = waitingForKeyboardCloseRunnable;
-                    waitingForKeyboardCloseRunnable = null;
-                    containerView.post(run);
-                } else {
-                    waitingForKeyboardCloseRunnable.run();
-                    waitingForKeyboardCloseRunnable = null;
-                }
+                // NOTE: run synchronously, like upstream. The continuation self-guards on
+                // field identity (waitingForKeyboardCloseRunnable != this -> drop), so it
+                // must run while the field still points at it. Deferring it via post()
+                // after nulling the field (or reposting without nulling) silently drops
+                // the transition's second half every time: stuck fragments, leftover boxes.
+                waitingForKeyboardCloseRunnable.run();
+                waitingForKeyboardCloseRunnable = null;
             }
         }
 
